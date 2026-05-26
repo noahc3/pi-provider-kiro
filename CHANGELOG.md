@@ -7,13 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-05-26
+
 ### Added
 
-- Add `"pi-package"` keyword to `package.json` for discoverability on https://pi.dev/packages ([#61](https://github.com/mikeyobrien/pi-provider-kiro/issues/61))
+- Fully dynamic model list loading and caching using Kiro's `/ListAvailableModels` API, which completely replaces hardcoding-staleness and dynamically adds any new models Kiro registers (resolves [#69](https://github.com/mikeyobrien/pi-provider-kiro/issues/69)).
+- Add `"pi-package"` keyword to `package.json` for discoverability on https://pi.dev/packages (resolves [#61](https://github.com/mikeyobrien/pi-provider-kiro/issues/61)).
+
+### Changed
+
+- Migrated all dependencies and imports from the deprecated `@mariozechner/` package scope to the new `@earendil-works/` package scope (`pi-ai`, `pi-coding-agent`, `pi-tui`), upgrading them to version `^0.75.5`.
+- Updated build script to use `esbuild` direct compilation on source TypeScript files, improving speed and removing dual-step `tsc` builds.
 
 ### Fixed
 
-- Expose `xhigh` thinking level in pi UI for all reasoning models by declaring `thinkingLevelMap` metadata
+- Fixed Google/GitHub social login issues by checking and injecting `profileArn` directly from `kiro-cli` configuration when AWS returns empty lists (merged PR [#70](https://github.com/mikeyobrien/pi-provider-kiro/pull/70)).
+- Fixed production Git installation issues (`pi install git:...`) by moving `esbuild` to production dependencies and aligning the `prepare` lifecycle hook (merged PR [#68](https://github.com/mikeyobrien/pi-provider-kiro/pull/68)).
+- Removed `glm-5` from the `eu-central-1` set since it is only supported in `us-east-1` (resolves [#66](https://github.com/mikeyobrien/pi-provider-kiro/issues/66)).
+- Expose `xhigh` thinking level in pi UI for all reasoning models by declaring `thinkingLevelMap` metadata.
 
 ## [0.6.1] - 2026-04-18
 
@@ -150,7 +161,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial release: 17 models across 7 families, OAuth device code flow, kiro-cli SQLite credential fallback, streaming pipeline with thinking tag parser
 
-[Unreleased]: https://github.com/mikeyobrien/pi-provider-kiro/compare/v0.5.2...HEAD
+[Unreleased]: https://github.com/mikeyobrien/pi-provider-kiro/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/mikeyobrien/pi-provider-kiro/compare/v0.6.1...v0.7.0
+[0.6.1]: https://github.com/mikeyobrien/pi-provider-kiro/compare/v0.6.0...v0.6.1
+[0.6.0]: https://github.com/mikeyobrien/pi-provider-kiro/compare/v0.5.2...v0.6.0
 [0.5.2]: https://github.com/mikeyobrien/pi-provider-kiro/compare/v0.5.1...v0.5.2
 [0.4.2]: https://github.com/mikeyobrien/pi-provider-kiro/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/mikeyobrien/pi-provider-kiro/compare/v0.4.0...v0.4.1
