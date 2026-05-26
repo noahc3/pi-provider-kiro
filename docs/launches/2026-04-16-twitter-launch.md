@@ -2,7 +2,7 @@
 
 ## Status snapshot
 
-`main` is launch-clean again and ready for a new package release. The CI/build blocker caused by bundling `@mariozechner/pi-tui` has been fixed on `main`, and this release prep branch cuts the next package version from that repaired state.
+`main` is launch-clean again and ready for a new package release. The CI/build blocker caused by bundling `@earendil-works/pi-tui` has been fixed on `main`, and this release prep branch cuts the next package version from that repaired state.
 
 ## Verified facts
 
@@ -18,7 +18,7 @@
 ## What ships in v0.5.2
 
 - Fix the build so `npm ci` / CI no longer fail when `prepare` runs the bundle step
-- Keep `@mariozechner/pi-tui` external so native `koffi` binaries are not inlined into the release bundle
+- Keep `@earendil-works/pi-tui` external so native `koffi` binaries are not inlined into the release bundle
 - Ship the refreshed README/package metadata that now match the real 19-model login and model surface
 
 ## Remaining caveats / blockers

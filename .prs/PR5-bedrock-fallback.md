@@ -97,7 +97,7 @@ Modified `refreshKiroToken()` graceful degradation:
 ## Requirements
 
 **Peer Dependency:**
-- Requires `@mariozechner/pi-ai` with `pi-provider-bedrock` module
+- Requires `@earendil-works/pi-ai` with `pi-provider-bedrock` module
 
 **AWS Credentials:**
 - Must have valid AWS credentials (via environment, profile, or IAM)

@@ -22,7 +22,7 @@
     "README.md"
   ],
   "scripts": {
-    "build": "esbuild src/index.ts --bundle --platform=node --format=esm --outfile=dist/index.js --external:@mariozechner/pi-ai --external:@mariozechner/pi-coding-agent --external:@mariozechner/pi-tui",
+    "build": "esbuild src/index.ts --bundle --platform=node --format=esm --outfile=dist/index.js --external:@earendil-works/pi-ai --external:@earendil-works/pi-coding-agent --external:@earendil-works/pi-tui",
     "check": "tsc --noEmit",
     "lint": "biome check .",
     "lint:fix": "biome check --write .",
@@ -43,9 +43,9 @@
   },
   "devDependencies": {
     "@biomejs/biome": "2.4.2",
-    "@mariozechner/pi-ai": "^0.53.0",
-    "@mariozechner/pi-coding-agent": "^0.53.0",
-    "@mariozechner/pi-tui": "^0.73.0",
+    "@earendil-works/pi-ai": "^0.75.5",
+    "@earendil-works/pi-coding-agent": "^0.75.5",
+    "@earendil-works/pi-tui": "^0.75.5",
     "typescript": "^5.7.0",
     "vitest": "^3.0.0"
   }

@@ -15,8 +15,8 @@ import type {
   TextContent,
   ToolCall,
   ToolResultMessage,
-} from "@mariozechner/pi-ai";
-import * as PiAi from "@mariozechner/pi-ai";
+} from "@earendil-works/pi-ai";
+import * as PiAi from "@earendil-works/pi-ai";
 import { parseBracketToolCalls } from "./bracket-tool-parser.js";
 import { debugEnabled, debugLog } from "./debug.js";
 import { parseKiroEvents } from "./event-parser.js";

@@ -9,7 +9,7 @@ import type {
   Tool,
   ToolCall,
   ToolResultMessage,
-} from "@mariozechner/pi-ai";
+} from "@earendil-works/pi-ai";
 
 export interface KiroImage {
   format: string;

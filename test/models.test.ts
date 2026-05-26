@@ -121,9 +121,9 @@ describe("Feature 2: Model Definitions", () => {
   // pi's UI exposes the `xhigh` thinking level only when a model's
   // `thinkingLevelMap.xhigh` is explicitly defined (not undefined, not null).
   // All other levels are opt-out. Mirror the pi-ai filter locally so this test
-  // is self-contained and version-independent from @mariozechner/pi-ai.
+  // is self-contained and version-independent from @earendil-works/pi-ai.
   //
-  // Source: @mariozechner/pi-ai models.ts → getSupportedThinkingLevels
+  // Source: @earendil-works/pi-ai models.ts → getSupportedThinkingLevels
   describe("thinkingLevelMap — pi UI exposes xhigh", () => {
     const EXTENDED_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
     type Level = (typeof EXTENDED_LEVELS)[number];
