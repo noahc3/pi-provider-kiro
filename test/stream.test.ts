@@ -749,6 +749,129 @@ describe("Feature 9: Streaming Integration", () => {
   });
 
   // =========================================================================
+  // Placeholder tools when context.tools is empty/undefined (advisor path)
+  // —————————————————————————————————————————————————————————————————————————
+  // When a caller passes no current tools (advisor strategy) but the inherited
+  // conversation references prior toolUses, Kiro rejects the request as
+  // "Improperly formed" unless those tool names are declared. The provider
+  // must synthesize placeholder specs in that case.
+  // =========================================================================
+
+  it("synthesizes placeholder tool specs when context.tools is [] but history references tools", async () => {
+    const assistantWithTool: AssistantMessage = {
+      role: "assistant",
+      content: [{ type: "toolCall", id: "tc1", name: "calc", arguments: { expr: "2+2" } }],
+      api: "kiro-api",
+      provider: "kiro",
+      model: "claude-sonnet-4-5",
+      usage: zeroUsage,
+      stopReason: "toolUse",
+      timestamp: ts,
+    };
+    const toolResult: ToolResultMessage = {
+      role: "toolResult",
+      toolCallId: "tc1",
+      toolName: "calc",
+      content: [{ type: "text", text: "4" }],
+      isError: false,
+      timestamp: ts,
+    };
+    const context: Context = {
+      systemPrompt: "You are helpful",
+      messages: [
+        { role: "user", content: "Calculate 2+2", timestamp: ts },
+        assistantWithTool,
+        toolResult,
+        { role: "user", content: "Now please advise on the situation above.", timestamp: ts },
+      ],
+      tools: [],
+    };
+
+    const mockFetch = mockFetchOk('{"content":"Sure."}{"contextUsagePercentage":3}');
+    vi.stubGlobal("fetch", mockFetch);
+
+    const stream = streamKiro(makeModel(), context, { apiKey: "tok" });
+    await collect(stream);
+
+    const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+    const tools = body.conversationState.currentMessage.userInputMessage.userInputMessageContext?.tools as
+      | Array<{ toolSpecification: { name: string } }>
+      | undefined;
+    expect(tools).toBeDefined();
+    expect(tools?.map((t) => t.toolSpecification.name)).toContain("calc");
+
+    vi.unstubAllGlobals();
+  });
+
+  it("synthesizes placeholder tool specs when context.tools is undefined but history references tools", async () => {
+    const assistantWithTool: AssistantMessage = {
+      role: "assistant",
+      content: [{ type: "toolCall", id: "tc1", name: "calc", arguments: { expr: "2+2" } }],
+      api: "kiro-api",
+      provider: "kiro",
+      model: "claude-sonnet-4-5",
+      usage: zeroUsage,
+      stopReason: "toolUse",
+      timestamp: ts,
+    };
+    const toolResult: ToolResultMessage = {
+      role: "toolResult",
+      toolCallId: "tc1",
+      toolName: "calc",
+      content: [{ type: "text", text: "4" }],
+      isError: false,
+      timestamp: ts,
+    };
+    const context: Context = {
+      systemPrompt: "You are helpful",
+      messages: [
+        { role: "user", content: "Calculate 2+2", timestamp: ts },
+        assistantWithTool,
+        toolResult,
+        { role: "user", content: "Now please advise on the situation above.", timestamp: ts },
+      ],
+      // tools intentionally omitted
+    };
+
+    const mockFetch = mockFetchOk('{"content":"Sure."}{"contextUsagePercentage":3}');
+    vi.stubGlobal("fetch", mockFetch);
+
+    const stream = streamKiro(makeModel(), context, { apiKey: "tok" });
+    await collect(stream);
+
+    const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+    const tools = body.conversationState.currentMessage.userInputMessage.userInputMessageContext?.tools as
+      | Array<{ toolSpecification: { name: string } }>
+      | undefined;
+    expect(tools).toBeDefined();
+    expect(tools?.map((t) => t.toolSpecification.name)).toContain("calc");
+
+    vi.unstubAllGlobals();
+  });
+
+  it("omits userInputMessageContext.tools when context.tools is [] and history has no tool uses", async () => {
+    // Plain user-only conversation with no current tools must not emit a tools
+    // array — preserves prior behavior for the genuinely tool-less case.
+    const context: Context = {
+      systemPrompt: "You are helpful",
+      messages: [{ role: "user", content: "Hello", timestamp: ts }],
+      tools: [],
+    };
+
+    const mockFetch = mockFetchOk('{"content":"Hi"}{"contextUsagePercentage":1}');
+    vi.stubGlobal("fetch", mockFetch);
+
+    const stream = streamKiro(makeModel(), context, { apiKey: "tok" });
+    await collect(stream);
+
+    const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+    const uimc = body.conversationState.currentMessage.userInputMessage.userInputMessageContext;
+    expect(uimc?.tools).toBeUndefined();
+
+    vi.unstubAllGlobals();
+  });
+
+  // =========================================================================
   // Non-retryable errors (complement to retry test)
   // =========================================================================
 

@@ -372,15 +372,18 @@ export function streamKiro(
         if (wasPreviousResponseTruncated(context.messages)) {
           currentContent = `${TRUNCATION_NOTICE}\n\n${currentContent}`;
         }
+        // Always synthesize placeholder specs for tool names referenced in
+        // history, even when context.tools is empty/undefined. Without this,
+        // an "advisor-style" call that inherits a tool-rich conversation but
+        // declares no current tools is rejected by Kiro as "Improperly formed
+        // request" because history references toolUses with no tool catalog.
         let uimc: { toolResults?: KiroToolResult[]; tools?: KiroToolSpec[] } | undefined;
-        if (currentToolResults.length > 0 || (context.tools && context.tools.length > 0)) {
+        const baseTools = context.tools?.length ? convertToolsToKiro(context.tools) : [];
+        const finalTools = history.length > 0 ? addPlaceholderTools(baseTools, history) : baseTools;
+        if (currentToolResults.length > 0 || finalTools.length > 0) {
           uimc = {};
           if (currentToolResults.length > 0) uimc.toolResults = currentToolResults;
-          if (context.tools?.length) {
-            let kt = convertToolsToKiro(context.tools);
-            if (history.length > 0) kt = addPlaceholderTools(kt, history);
-            uimc.tools = kt;
-          }
+          if (finalTools.length > 0) uimc.tools = finalTools;
         }
         if (firstMsg?.role === "user") {
           const imgs = extractImages(firstMsg);
