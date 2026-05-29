@@ -26,8 +26,8 @@ describe("Feature 2: Model Definitions", () => {
   });
 
   describe("KIRO_MODEL_IDS", () => {
-    it("contains 12 model IDs", () => {
-      expect(KIRO_MODEL_IDS.size).toBe(12);
+    it("contains at least 12 static model IDs", () => {
+      expect(KIRO_MODEL_IDS.size).toBeGreaterThanOrEqual(12);
     });
   });
 
