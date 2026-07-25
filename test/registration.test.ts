@@ -3,12 +3,27 @@ import type { ProviderModelsStore } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getKiroCliCredentials } from "../src/kiro-cli.js";
+import { resetKiroMeteringState } from "../src/metering.js";
 import { KIRO_MANAGEMENT_CACHE_PATH, kiroModels } from "../src/models.js";
+
+type ExtensionHandler = (...args: unknown[]) => unknown;
 
 const mockPi = () => {
   const registerProvider = vi.fn();
-  return { pi: { registerProvider, on: vi.fn() } as unknown as ExtensionAPI, registerProvider };
+  const registerCommand = vi.fn();
+  const appendEntry = vi.fn();
+  const handlers = new Map<string, ExtensionHandler>();
+  const on = vi.fn((event: string, handler: ExtensionHandler) => handlers.set(event, handler));
+  return {
+    pi: { registerProvider, registerCommand, appendEntry, on } as unknown as ExtensionAPI,
+    registerProvider,
+    registerCommand,
+    appendEntry,
+    handlers,
+  };
 };
+
+beforeEach(() => resetKiroMeteringState());
 
 /** Minimal host store fixture — refreshKiroModels intentionally uses the Kiro file cache instead. */
 const mockProviderModelsStore = (): ProviderModelsStore => ({
@@ -63,6 +78,150 @@ describe("Feature 1: Extension Registration", () => {
 
     const config = registerProvider.mock.calls[0][1];
     expect(typeof config.streamSimple).toBe("function");
+  });
+
+  it("registers /kiro-usage and displays precise monthly credits", async () => {
+    const mod = await import("../src/index.js");
+    const { pi, registerCommand } = mockPi();
+    mod.default(pi);
+
+    const command = registerCommand.mock.calls.find(([name]) => name === "kiro-usage")?.[1];
+    expect(command?.description).toContain("session and monthly credit usage");
+
+    const notify = vi.fn();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            nextDateReset: 1785542400,
+            daysUntilReset: 0,
+            subscriptionInfo: { subscriptionTitle: "KIRO PRO" },
+            usageBreakdown: {
+              resourceType: "CREDIT",
+              displayName: "Credits",
+              currentUsage: 12,
+              currentUsageWithPrecision: 12.375,
+              currentOverages: 0,
+              usageLimit: 1000,
+              usageLimitWithPrecision: 1000,
+              nextDateReset: 1785542400,
+              overageCharges: 0,
+            },
+          }),
+      }),
+    );
+
+    await command.handler("", {
+      modelRegistry: {
+        getApiKeyForProvider: vi.fn().mockResolvedValue("token"),
+      },
+      ui: { notify, setStatus: vi.fn() },
+    });
+
+    const message = notify.mock.calls[0]?.[0] as string;
+    expect(message).toMatch(
+      /^Kiro credits: 12\.38 \/ 1000 \(KIRO PRO · resets in \d+ days \(.+\)\)\nKiro session: 0 credits$/,
+    );
+    expect(message).not.toContain("resets in 0 days");
+    vi.unstubAllGlobals();
+  });
+
+  it("shows persisted session usage when monthly usage cannot be fetched", async () => {
+    const mod = await import("../src/index.js");
+    const { pi, registerCommand, handlers } = mockPi();
+    mod.default(pi);
+
+    const notify = vi.fn();
+    const setStatus = vi.fn();
+    const ctx = {
+      model: { provider: "kiro" },
+      modelRegistry: {
+        getApiKeyForProvider: vi.fn().mockResolvedValue(undefined),
+      },
+      sessionManager: {
+        getSessionId: () => "root-session",
+        getBranch: () => [
+          {
+            type: "custom",
+            customType: "pi-provider-kiro:session-usage",
+            data: { version: 1, usage: 2.5, requestCount: 4, unit: "credit", unitPlural: "credits" },
+          },
+        ],
+      },
+      ui: { notify, setStatus },
+    };
+    await handlers.get("session_start")?.({}, ctx);
+
+    const command = registerCommand.mock.calls.find(([name]) => name === "kiro-usage")?.[1];
+    await command.handler("", ctx);
+
+    expect(notify).toHaveBeenCalledWith(
+      expect.stringMatching(/^Kiro session: 2\.5 credits\n(Unable to fetch monthly usage:|Kiro credentials not found)/),
+      "error",
+    );
+  });
+
+  it("persists session credits and updates the Kiro-only footer after the root agent settles", async () => {
+    const mod = await import("../src/index.js");
+    const { pi, handlers, appendEntry } = mockPi();
+    mod.default(pi);
+
+    const notify = vi.fn();
+    const setStatus = vi.fn();
+    const ctx = {
+      model: { provider: "kiro" },
+      modelRegistry: {
+        getApiKeyForProvider: vi.fn().mockResolvedValue(undefined),
+      },
+      sessionManager: { getSessionId: () => "root-session", getBranch: () => [] },
+      ui: { notify, setStatus },
+    };
+    await handlers.get("session_start")?.({}, ctx);
+    expect(setStatus).toHaveBeenLastCalledWith("kiro-usage", "[Kiro: session 0 credits]");
+    await handlers.get("before_agent_start")?.({}, ctx);
+
+    const { recordKiroMetering } = await import("../src/metering.js");
+    recordKiroMetering({ usage: 0.25, unit: "credit", unitPlural: "credits" });
+    recordKiroMetering({ usage: 0.5, unit: "credit", unitPlural: "credits" });
+    await handlers.get("agent_settled")?.({}, ctx);
+
+    expect(appendEntry).toHaveBeenCalledWith(
+      "pi-provider-kiro:session-usage",
+      expect.objectContaining({ version: 1, usage: 0.75, requestCount: 2 }),
+    );
+    expect(setStatus).toHaveBeenLastCalledWith("kiro-usage", "[Kiro: session 0.75 credits]");
+    expect(notify).toHaveBeenCalledWith("Kiro turn usage: 0.75 credits", "info");
+  });
+
+  it("restores branch usage and only shows the footer for Kiro models", async () => {
+    const mod = await import("../src/index.js");
+    const { pi, handlers } = mockPi();
+    mod.default(pi);
+
+    const setStatus = vi.fn();
+    const ctx = {
+      model: { provider: "kiro" },
+      sessionManager: {
+        getSessionId: () => "root-session",
+        getBranch: () => [
+          {
+            type: "custom",
+            customType: "pi-provider-kiro:session-usage",
+            data: { version: 1, usage: 1.25, requestCount: 3, unit: "credit", unitPlural: "credits" },
+          },
+        ],
+      },
+      ui: { setStatus },
+    };
+    await handlers.get("session_start")?.({}, ctx);
+    expect(setStatus).toHaveBeenLastCalledWith("kiro-usage", "[Kiro: session 1.25 credits]");
+
+    await handlers.get("model_select")?.({ model: { provider: "openai" } }, ctx);
+    expect(setStatus).toHaveBeenLastCalledWith("kiro-usage", undefined);
+    await handlers.get("model_select")?.({ model: { provider: "kiro" } }, ctx);
+    expect(setStatus).toHaveBeenLastCalledWith("kiro-usage", "[Kiro: session 1.25 credits]");
   });
 
   it("uses kiro-api as the api type", async () => {

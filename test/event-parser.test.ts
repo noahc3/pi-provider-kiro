@@ -82,6 +82,27 @@ describe("Feature 8: Stream Event Parsing", () => {
       expect(e?.type === "usage" && e.data.outputTokens).toBe(50);
     });
 
+    it("parses framed metering body using the Smithy event type", () => {
+      expect(parseKiroEvent({ usage: 0.25, unit: "credit", unitPlural: "credits" }, "meteringEvent")).toEqual({
+        type: "metering",
+        data: { usage: 0.25, unit: "credit", unitPlural: "credits" },
+      });
+    });
+
+    it("parses metering event with fractional credits", () => {
+      expect(parseKiroEvent({ meteringEvent: { usage: 0.375, unit: "credit", unitPlural: "credits" } })).toEqual({
+        type: "metering",
+        data: { usage: 0.375, unit: "credit", unitPlural: "credits" },
+      });
+    });
+
+    it("ignores invalid optional metering fields", () => {
+      expect(parseKiroEvent({ meteringEvent: { usage: "0.5", unit: 1 } })).toEqual({
+        type: "metering",
+        data: { usage: undefined, unit: undefined, unitPlural: undefined },
+      });
+    });
+
     it("returns null for unrecognized shape", () => {
       expect(parseKiroEvent({ unknown: true })).toBeNull();
     });

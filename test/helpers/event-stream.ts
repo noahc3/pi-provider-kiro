@@ -5,10 +5,10 @@ const codec = new EventStreamCodec(
   (input: string) => new TextEncoder().encode(input),
 );
 
-export function encodeEventMessage(payload: object): Uint8Array {
+export function encodeEventMessage(payload: object, eventType = "assistantResponseEvent"): Uint8Array {
   return codec.encode({
     headers: {
-      ":event-type": { type: "string", value: "assistantResponseEvent" },
+      ":event-type": { type: "string", value: eventType },
       ":message-type": { type: "string", value: "event" },
     },
     body: new TextEncoder().encode(JSON.stringify(payload)),

@@ -44,6 +44,7 @@ import {
   resetKiroProfileArnCache,
   resolveKiroProfileArn,
 } from "./management.js";
+import { recordKiroMetering } from "./metering.js";
 import { resolveKiroModel } from "./models.js";
 import {
   capacityRetryConfig,
@@ -671,8 +672,10 @@ export function streamKiro(
           const { done, value } = iterResult;
           if (done) break;
           resetIdle();
-          const eventPayload = Object.values(value as Record<string, unknown>)[0] as Record<string, unknown>;
-          const event = parseKiroEvent(eventPayload);
+          const eventEntry = Object.entries(value as Record<string, unknown>)[0];
+          if (!eventEntry) continue;
+          const [eventType, eventPayload] = eventEntry as [string, Record<string, unknown>];
+          const event = parseKiroEvent(eventPayload, eventType);
           if (!event) continue;
           if (debugEnabled()) debugLog("stream.events", [event]);
           switch (event.type) {
@@ -744,6 +747,10 @@ export function streamKiro(
             }
             case "usage": {
               usageEvent = event.data;
+              break;
+            }
+            case "metering": {
+              recordKiroMetering(event.data);
               break;
             }
             case "error": {

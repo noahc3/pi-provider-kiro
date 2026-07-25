@@ -11,6 +11,12 @@ import type {
 import { isContextOverflow } from "@earendil-works/pi-ai/compat";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { findJsonEnd } from "../src/bracket-tool-parser.js";
+import {
+  beginKiroMeteringCollection,
+  claimRootMeteringSession,
+  finishKiroMeteringCollection,
+  resetKiroMeteringState,
+} from "../src/metering.js";
 import { capacityRetryConfig, retryConfig } from "../src/retry.js";
 import { resetProfileArnCache, streamKiro } from "../src/stream.js";
 import { EMPTY_CONTENT_PLACEHOLDER, type KiroHistoryEntry } from "../src/transform.js";
@@ -179,6 +185,7 @@ describe("Feature 9: Streaming Integration", () => {
   beforeEach(() => {
     // Mark profileArn as already resolved so tests don't see an extra fetch
     resetProfileArnCache(true);
+    resetKiroMeteringState();
   });
 
   it("emits error when no credentials provided", async () => {
@@ -197,6 +204,33 @@ describe("Feature 9: Streaming Integration", () => {
     const error = events.find((e) => e.type === "error");
     expect(error).toBeDefined();
     expect(error?.type === "error" && error.error.stopReason).toBe("aborted");
+  });
+
+  it("records fractional metering frames from the response stream", async () => {
+    claimRootMeteringSession("root");
+    beginKiroMeteringCollection("root");
+    const content = encodeEventMessage({ content: "Hi" }, "assistantResponseEvent");
+    const metering = encodeEventMessage({ usage: 0.125, unit: "credit", unitPlural: "credits" }, "meteringEvent");
+    const contextUsage = encodeEventMessage({ contextUsagePercentage: 10 }, "contextUsageEvent");
+    const frames = concatMessages(content, metering, contextUsage);
+    const mockFetch = vi.fn().mockResolvedValueOnce({
+      ok: true,
+      body: {
+        getReader: () => ({
+          read: vi
+            .fn()
+            .mockResolvedValueOnce({ done: false, value: frames })
+            .mockResolvedValueOnce({ done: true, value: undefined }),
+          releaseLock: () => {},
+        }),
+      },
+    });
+    vi.stubGlobal("fetch", mockFetch);
+
+    await collect(streamKiro(makeModel(), makeContext(), { apiKey: "test-token" }));
+
+    expect(finishKiroMeteringCollection("root")).toMatchObject({ usage: 0.125, requestCount: 1 });
+    vi.unstubAllGlobals();
   });
 
   it("makes POST to correct endpoint with auth header", async () => {

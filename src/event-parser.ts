@@ -11,9 +11,30 @@ export type KiroStreamEvent =
   | { type: "contextUsage"; data: { contextUsagePercentage: number } }
   | { type: "followupPrompt"; data: string }
   | { type: "usage"; data: { inputTokens?: number; outputTokens?: number } }
+  | { type: "metering"; data: { usage?: number; unit?: string; unitPlural?: string } }
   | { type: "error"; data: { error: string; message?: string } };
 
-export function parseKiroEvent(parsed: Record<string, unknown>): KiroStreamEvent | null {
+export function parseKiroEvent(parsed: Record<string, unknown>, eventType?: string): KiroStreamEvent | null {
+  // Smithy event streams carry the union member in the `:event-type` frame
+  // header, while the JSON body contains only that member's fields. Preserve
+  // compatibility with callers that pass the nested service-union shape too.
+  if (eventType === "meteringEvent" || parsed.meteringEvent !== undefined) {
+    const metering = (parsed.meteringEvent ?? parsed) as Record<string, unknown>;
+    return {
+      type: "metering",
+      data: {
+        usage: typeof metering.usage === "number" ? metering.usage : undefined,
+        unit: typeof metering.unit === "string" ? metering.unit : undefined,
+        unitPlural: typeof metering.unitPlural === "string" ? metering.unitPlural : undefined,
+      },
+    };
+  }
+  if (eventType === "contextUsageEvent") {
+    return {
+      type: "contextUsage",
+      data: { contextUsagePercentage: parsed.contextUsagePercentage as number },
+    };
+  }
   if (parsed.content !== undefined) return { type: "content", data: parsed.content as string };
   if (typeof parsed.text === "string") return { type: "thinkingText", data: parsed.text };
   if (typeof parsed.signature === "string") return { type: "thinkingSignature", data: parsed.signature };

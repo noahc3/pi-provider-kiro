@@ -10,6 +10,8 @@ Kiro gives you a strong free model menu, but pi needs a provider that speaks Kir
 - shared credentials from an existing `kiro-cli` session when available
 - reasoning-aware streaming
 - region-aware model filtering so pi only shows models your Kiro region can actually use
+- monthly credit totals via `/kiro-usage`
+- exact fractional credit usage after each settled agent interaction, including in-process foreground subagents
 
 ## Quick start
 
@@ -72,6 +74,24 @@ Or let Kiro pick automatically:
 
 Reasoning is automatically enabled for supported models. Use `/reasoning` to adjust the thinking budget.
 
+### Credit usage
+
+When a Kiro model is selected, pi's footer includes a provider status such as:
+
+```text
+[Kiro: session 2.5 credits · month 48.75/1000]
+```
+
+The session total is stored in pi's session data after each settled interaction, so it survives exit/resume and follows the active branch when using `/tree`. Monthly usage is refreshed after settled Kiro work and when the command below runs.
+
+Show both the persisted session total and the authoritative current-month Kiro usage:
+
+```text
+/kiro-usage
+```
+
+After each agent interaction settles, the provider also reports that turn's sum of Kiro's streamed fractional credit metering events. This includes foreground subagents run in the same pi process. Detached background agents that continue after the primary interaction settles are not assigned to that completed turn; `/kiro-usage` remains the authoritative account total.
+
 ## Retry Behavior
 
 Generic transient retries such as HTTP `429` and `5xx` are handled by `pi-coding-agent` at the session layer.
@@ -105,6 +125,8 @@ src/
 ├── history.ts          # Conversation history management
 ├── thinking-parser.ts  # Streaming <thinking> tag parser
 ├── event-parser.ts     # Kiro stream event parser
+├── metering.ts         # Per-interaction fractional credit accounting
+├── usage.ts            # Monthly credit usage API
 └── stream.ts           # Main streaming orchestrator
 ```
 
