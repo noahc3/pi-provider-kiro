@@ -143,6 +143,25 @@ export function resetProfileArnCache(resolved = false): void {
   skipProfileResolutionForTests = resolved;
 }
 
+/**
+ * Resolve the profile ARN on a management call made *after* a credential
+ * refresh, flagging any management failure as refresh-already-attempted.
+ *
+ * A 401/403 here means the freshly-refreshed credential was itself rejected, so
+ * a consumer must not read it as a first-contact auth error it can recover from
+ * by refreshing again.
+ */
+async function resolveProfileArnAfterRefresh(auth: KiroManagementAuth): Promise<string> {
+  try {
+    return await resolveKiroProfileArn(auth);
+  } catch (error) {
+    // instanceof, not the structural guard: this error can only come from the
+    // module-local management.ts, so it is always the local class.
+    if (error instanceof KiroManagementHttpError) throw error.markRefreshAttempted();
+    throw error;
+  }
+}
+
 function emitToolCall(
   state: KiroToolCallState,
   output: AssistantMessage,
@@ -239,13 +258,15 @@ export function streamKiro(
         const storedCreds = getKiroCliCredentials();
         const freshCreds =
           storedCreds?.access && storedCreds.access !== accessToken ? storedCreds : refreshViaKiroCli();
-        if (!freshCreds?.access) throw error;
+        // Rethrow the ORIGINAL error, flagged so the consumer knows in-process
+        // re-auth was already tried and lost.
+        if (!freshCreds?.access) throw error.markRefreshAttempted();
 
         accessToken = freshCreds.access;
         managementAuth = { accessToken, region };
         profileArn =
           freshCreds.profileArn ||
-          (skipProfileResolutionForTests ? TEST_PROFILE_ARN : await resolveKiroProfileArn(managementAuth));
+          (skipProfileResolutionForTests ? TEST_PROFILE_ARN : await resolveProfileArnAfterRefresh(managementAuth));
       }
 
       // Trigger dynamic models cache update in the background if empty or stale
@@ -531,7 +552,9 @@ export function streamKiro(
               profileArn =
                 freshCreds?.profileArn ||
                 inheritedDesktopProfileArn ||
-                (skipProfileResolutionForTests ? TEST_PROFILE_ARN : await resolveKiroProfileArn(managementAuth));
+                (skipProfileResolutionForTests
+                  ? TEST_PROFILE_ARN
+                  : await resolveProfileArnAfterRefresh(managementAuth));
               const delayMs = exponentialBackoff(retryCount - 1, 500, MAX_RETRY_DELAY);
               await abortableDelay(delayMs, options?.signal);
               break; // break inner loop, continue outer loop

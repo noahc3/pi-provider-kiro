@@ -16,6 +16,8 @@ import { fetchKiroUsage } from "./usage.js";
 
 export { resolveApiRegion } from "./endpoints.js";
 export type { KiroStreamEvent } from "./event-parser.js";
+export type { KiroErrorPlane } from "./management.js";
+export { isKiroManagementHttpError, KiroManagementHttpError } from "./management.js";
 export { KIRO_MODEL_IDS, kiroModels, resolveKiroModel } from "./models.js";
 export { streamKiro } from "./stream.js";
 
