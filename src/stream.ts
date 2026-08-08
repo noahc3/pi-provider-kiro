@@ -39,6 +39,7 @@ import {
 import { getKiroCliCredentials, getKiroCliCredentialsAllowExpired, refreshViaKiroCli } from "./kiro-cli.js";
 import {
   invalidateKiroProfileArn,
+  KIRO_AUTH_PLANE_DIAGNOSTIC,
   type KiroManagementAuth,
   KiroManagementHttpError,
   resetKiroProfileArnCache,
@@ -927,6 +928,24 @@ export function streamKiro(
     } catch (error) {
       output.stopReason = options?.signal?.aborted ? "aborted" : "error";
       output.errorMessage = formatSafeError(error);
+      // `errorMessage` is a string, so the typed error object never reaches the
+      // consumer. Republish the management-plane discriminator through the
+      // diagnostics channel, which does survive on the AssistantMessage, so a
+      // consumer can classify the failure without matching error prose.
+      if (error instanceof KiroManagementHttpError) {
+        output.diagnostics = [
+          ...(output.diagnostics ?? []),
+          {
+            type: KIRO_AUTH_PLANE_DIAGNOSTIC,
+            timestamp: Date.now(),
+            details: {
+              plane: error.plane,
+              status: error.status,
+              refreshAttempted: error.refreshAttempted,
+            },
+          },
+        ];
+      }
       debugLog("response.caught", { stopReason: output.stopReason, error: output.errorMessage });
       stream.push({ type: "error", reason: output.stopReason, error: output });
       stream.end();
