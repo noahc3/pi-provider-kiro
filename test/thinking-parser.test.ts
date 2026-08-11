@@ -82,10 +82,10 @@ describe("Feature 7: Thinking Tag Parser", () => {
     parser.processChunk("king>deep thought</thinking>");
     parser.finalize();
 
-    // Thinking block inserted before text block
-    expect(output.content[0]?.type).toBe("thinking");
-    expect(output.content[0]?.type === "thinking" && output.content[0].thinking).toBe("deep thought");
-    expect(output.content[1]?.type === "text" && output.content[1].text).toBe("Hello ");
+    // Text keeps the index it was created with; thinking is appended after it.
+    expect(output.content[0]?.type === "text" && output.content[0].text).toBe("Hello ");
+    expect(output.content[1]?.type).toBe("thinking");
+    expect(output.content[1]?.type === "thinking" && output.content[1].thinking).toBe("deep thought");
   });
 
   it("detects thinking start tag split across chunks", async () => {
@@ -179,10 +179,10 @@ describe("Feature 7: Thinking Tag Parser", () => {
   });
 
   // =========================================================================
-  // Text-before-thinking (Kiro API sends text first, thinking after)
+  // Wire order (Kiro API can send text before thinking)
   // =========================================================================
 
-  it("reorders thinking before text when text arrives first", async () => {
+  it("keeps text that arrived before the first thinking region ahead of it", async () => {
     const output = makeOutput();
     const stream = createAssistantMessageEventStream();
     const parser = new ThinkingTagParser(output, stream);
@@ -193,14 +193,52 @@ describe("Feature 7: Thinking Tag Parser", () => {
     parser.finalize();
     stream.end();
 
-    // Thinking block should be at index 0, text at index 1
-    expect(output.content[0]?.type).toBe("thinking");
-    expect(output.content[1]?.type).toBe("text");
-    expect((output.content[0] as { thinking: string }).thinking).toBe("reasoning");
-    expect((output.content[1] as { text: string }).text).toBe("Hello world");
+    // The content array is a record of what the model emitted and when, so the
+    // text the model produced first stays first. An earlier revision spliced
+    // the thinking block in ahead of it to drive UI order; that made the
+    // persisted order contradict the wire and invalidated already-emitted
+    // content indices.
+    expect(output.content.map((b) => b.type)).toEqual(["text", "thinking"]);
+    expect((output.content[0] as { text: string }).text).toBe("Hello world");
+    expect((output.content[1] as { thinking: string }).thinking).toBe("reasoning");
   });
 
-  it("getTextBlockIndex accounts for reordering when text arrives first", () => {
+  it("never reuses a contentIndex for two different blocks", async () => {
+    const events = await run(["Hello world", "<thinking>reasoning</thinking>"]);
+
+    // Each contentIndex must name exactly one block for the life of the stream.
+    // Splicing a block into the middle of the array broke this: text_start@0
+    // and thinking_start@0 were both emitted, so a consumer rebuilding content
+    // from events wrote the thinking block over the text it had at index 0.
+    const owner = new Map<number, string>();
+    for (const e of events) {
+      const idx = (e as { contentIndex?: number }).contentIndex;
+      if (idx === undefined) continue;
+      const kind = e.type.startsWith("thinking") ? "thinking" : "text";
+      const existing = owner.get(idx);
+      if (existing === undefined) owner.set(idx, kind);
+      else expect(existing).toBe(kind);
+    }
+    expect(owner.get(0)).toBe("text");
+    expect(owner.get(1)).toBe("thinking");
+  });
+
+  it("preserves order for a text -> thinking -> text message", async () => {
+    const output = makeOutput();
+    const stream = createAssistantMessageEventStream();
+    const parser = new ThinkingTagParser(output, stream);
+
+    parser.processChunk("before<thinking>mid</thinking>\n\nafter");
+    parser.finalize();
+    stream.end();
+
+    expect(output.content.map((b) => b.type)).toEqual(["text", "thinking", "text"]);
+    expect((output.content[0] as { text: string }).text).toBe("before");
+    expect((output.content[1] as { thinking: string }).thinking).toBe("mid");
+    expect((output.content[2] as { text: string }).text).toBe("after");
+  });
+
+  it("getTextBlockIndex points at the first text block when text arrives first", () => {
     const output = makeOutput();
     const stream = createAssistantMessageEventStream();
     const parser = new ThinkingTagParser(output, stream);
@@ -209,8 +247,8 @@ describe("Feature 7: Thinking Tag Parser", () => {
     parser.processChunk("<thinking>t</thinking>");
     parser.finalize();
 
-    // textBlockIndex should be 1 (shifted by thinking insertion)
-    expect(parser.getTextBlockIndex()).toBe(1);
+    // No splice, so the text block keeps the index it was created with.
+    expect(parser.getTextBlockIndex()).toBe(0);
   });
 
   // =========================================================================
@@ -252,8 +290,6 @@ describe("Feature 7: Thinking Tag Parser", () => {
     parser.processChunk("<thinking>first</thinking>\n\nmiddle<thinking>second</thinking>\n\nend");
     parser.finalize();
 
-    // Only the first thinking block may be hoisted ahead of text (the Kiro API
-    // sends text before the first thinking content). Later regions stay put.
     expect(output.content.map((b) => b.type)).toEqual(["thinking", "text", "thinking", "text"]);
   });
 
@@ -319,9 +355,8 @@ describe("Feature 7: Thinking Tag Parser", () => {
     parser.finalize();
     stream.end();
 
-    expect(output.content[0]?.type).toBe("thinking");
-    expect(output.content[1]?.type).toBe("text");
-    expect((output.content[0] as { thinking: string }).thinking).toBe("Let me think about this");
-    expect((output.content[1] as { text: string }).text).toBe("Hey! What can I help with?");
+    expect(output.content.map((b) => b.type)).toEqual(["text", "thinking"]);
+    expect((output.content[0] as { text: string }).text).toBe("Hey! What can I help with?");
+    expect((output.content[1] as { thinking: string }).thinking).toBe("Let me think about this");
   });
 });
