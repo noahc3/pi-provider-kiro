@@ -42,6 +42,23 @@ function deltas(events: AssistantMessageEvent[], type: string): string {
     .join("");
 }
 
+/**
+ * Maps every emitted `contentIndex` to the block family that used it, failing if
+ * one index is ever claimed by both the text and thinking families.
+ */
+function indexOwners(events: AssistantMessageEvent[]): Map<number, string> {
+  const owner = new Map<number, string>();
+  for (const e of events) {
+    const idx = (e as { contentIndex?: number }).contentIndex;
+    if (idx === undefined) continue;
+    const kind = e.type.startsWith("thinking") ? "thinking" : "text";
+    const existing = owner.get(idx);
+    if (existing === undefined) owner.set(idx, kind);
+    else expect(existing).toBe(kind);
+  }
+  return owner;
+}
+
 describe("Feature 7: Thinking Tag Parser", () => {
   it("emits thinking then text for content with thinking block", async () => {
     const events = await run(["<thinking>Let me think</thinking>\n\nAnswer"]);
@@ -210,15 +227,7 @@ describe("Feature 7: Thinking Tag Parser", () => {
     // Splicing a block into the middle of the array broke this: text_start@0
     // and thinking_start@0 were both emitted, so a consumer rebuilding content
     // from events wrote the thinking block over the text it had at index 0.
-    const owner = new Map<number, string>();
-    for (const e of events) {
-      const idx = (e as { contentIndex?: number }).contentIndex;
-      if (idx === undefined) continue;
-      const kind = e.type.startsWith("thinking") ? "thinking" : "text";
-      const existing = owner.get(idx);
-      if (existing === undefined) owner.set(idx, kind);
-      else expect(existing).toBe(kind);
-    }
+    const owner = indexOwners(events);
     expect(owner.get(0)).toBe("text");
     expect(owner.get(1)).toBe("thinking");
   });
@@ -231,11 +240,24 @@ describe("Feature 7: Thinking Tag Parser", () => {
     parser.processChunk("before<thinking>mid</thinking>\n\nafter");
     parser.finalize();
     stream.end();
+    const events: AssistantMessageEvent[] = [];
+    for await (const e of stream) events.push(e);
 
     expect(output.content.map((b) => b.type)).toEqual(["text", "thinking", "text"]);
     expect((output.content[0] as { text: string }).text).toBe("before");
     expect((output.content[1] as { thinking: string }).thinking).toBe("mid");
     expect((output.content[2] as { text: string }).text).toBe("after");
+
+    // This is the shape the splice aliased worst: it emitted text_start@0 then
+    // thinking_start@0 then text_start@2, so index 0 named a text block and a
+    // thinking block in the same stream while index 1 was never announced.
+    // Order alone does not pin that — assert index ownership as well.
+    const owner = indexOwners(events);
+    expect([...owner.entries()].sort(([a], [b]) => a - b)).toEqual([
+      [0, "text"],
+      [1, "thinking"],
+      [2, "text"],
+    ]);
   });
 
   it("getTextBlockIndex points at the first text block when text arrives first", () => {
