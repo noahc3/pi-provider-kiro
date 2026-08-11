@@ -282,7 +282,7 @@ describe("Feature 7: Thinking Tag Parser", () => {
     expect(thinkingBlocks.map((b) => (b as { thinking: string }).thinking)).toEqual(["first", "second"]);
   });
 
-  it("does not reorder a later thinking region ahead of preceding text", async () => {
+  it("files every region in wire order, alternating with the text between them", async () => {
     const output = makeOutput();
     const stream = createAssistantMessageEventStream();
     const parser = new ThinkingTagParser(output, stream);

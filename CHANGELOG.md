@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Keep parsed thinking blocks in the order the wire delivered them instead of splicing them ahead of text already emitted. `emitThinking()` moved a thinking block into the index of an existing text block to make the content array read thinking → text, which made the persisted array contradict the stream and reused one `contentIndex` for two different blocks — an index-addressed consumer such as pi-mono's proxy transport overwrote the text it had already placed and then threw on the following `text_end`. Presentation order is unaffected: outbound history still prepends every thinking block, and renderers drive thinking from stream events.
 - Send a placeholder instead of an empty `content` when a turn carries no text, and stop reporting Kiro's generic "Improperly formed request." rejection as a context overflow. A host that appends a message whose role falls outside pi-ai's `Message` union produced `content: ""`, which Kiro rejects with `400 REQUEST_BODY_INVALID`; relabeling that as `context_length_exceeded` then drove the caller into a compaction loop against a request that was structurally invalid rather than oversized. Also covers image-only and empty-text user messages.
 
 ## [0.9.3] - 2026-07-24
