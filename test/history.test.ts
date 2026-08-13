@@ -147,12 +147,13 @@ describe("Feature 6: History Management", () => {
         content: [{ text: "x".repeat(300) }],
         status: "success",
       });
+      // Tool-result carriers ship empty `content` — the payload is toolResults.
       const h = [
         userEntry("SYSTEM PROMPT\n\n<summary>ORIGINAL TASK</summary>"),
         assistantEntry("", [{ name: "read", toolUseId: "tc1", input: {} }]),
-        userEntry("Tool results provided.", [result("tc1")]),
+        userEntry("", [result("tc1")]),
         assistantEntry("", [{ name: "read", toolUseId: "tc2", input: {} }]),
-        userEntry("Tool results provided.", [result("tc2")]),
+        userEntry("", [result("tc2")]),
       ];
       const prepared = prepareHistory(h);
       const size = JSON.stringify(prepared).length;
@@ -226,7 +227,7 @@ describe("Feature 6: History Management", () => {
         assistantEntry("ok", [{ name: "screenshot", toolUseId: "tc1", input: {} }]),
         {
           userInputMessage: {
-            content: "Tool results provided.",
+            content: "",
             modelId: "M",
             origin: "KIRO_CLI",
             images: [{ format: "png", source: { bytes: "screenshot-data" } }],

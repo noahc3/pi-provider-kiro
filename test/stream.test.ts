@@ -1352,10 +1352,13 @@ describe("Feature 9: Streaming Integration", () => {
     expect(done).toBeDefined();
     expect(done?.type === "done" && done.message.stopReason).toBe("stop");
 
-    // Verify tool results were sent in the request body
+    // Verify tool results were sent in the request body. `content` is empty by
+    // design: Kiro's rule is content **or** toolResults, and this turn's payload
+    // is the toolResults. Filling it with prose would put a sentence the user
+    // never wrote into the conversation as a user utterance.
     const body = JSON.parse(mockFetch.mock.calls[0][1].body);
     const currentMsg = body.conversationState.currentMessage.userInputMessage;
-    expect(currentMsg.content).toBe("Tool results provided.");
+    expect(currentMsg.content).toBe("");
     expect(currentMsg.userInputMessageContext?.toolResults).toHaveLength(1);
     expect(currentMsg.userInputMessageContext.toolResults[0].toolUseId).toBe("tc1");
 
@@ -1418,12 +1421,18 @@ describe("Feature 9: Streaming Integration", () => {
   });
 
   // =========================================================================
-  // Required `content` field
-  // —————————————————————————————————————————————————————————————————————————
-  // Kiro rejects a current message with an empty `content` as
-  // "Improperly formed request." (reason REQUEST_BODY_INVALID). A turn can
-  // reach the request builder with no text — an image-only user message, or a
-  // user message whose text is empty — so a placeholder must be substituted.
+  // `content` on a payload-less turn vs. a tool turn
+  // ————————————————————————————————————————————————————————————————————
+  // Kiro's rule is content **or** tool results. A turn carrying neither has no
+  // payload at all — an image-only user message, an empty-text user message, or
+  // a host-appended message whose role falls outside pi-ai's `Message` union —
+  // and gets the neutral placeholder so its attachments still reach the model
+  // (#106).
+  //
+  // A tool turn is not that turn: its payload is
+  // `userInputMessageContext.toolResults`, so its `content` stays empty. Both
+  // cases share one line in the request builder, and the guard between them is
+  // load-bearing — see the mutation probe below.
   // =========================================================================
 
   // These use a prior turn so the system prompt is already consumed by the
@@ -1490,6 +1499,308 @@ describe("Feature 9: Streaming Integration", () => {
     const currentMsg = JSON.parse(mockFetch.mock.calls[0][1].body).conversationState.currentMessage.userInputMessage;
     expect(currentMsg.content).toContain("Explain this repo");
 
+    vi.unstubAllGlobals();
+  });
+
+  // -----------------------------------------------------------------------
+  // The tool-turn side of the same line.
+  //
+  // MUTATION PROBE for the `currentToolResults.length === 0` guard on the
+  // placeholder fallback in stream.ts: widen that condition back to a bare
+  // `if (currentContent === "")` and these three go red with
+  // `EMPTY_CONTENT_PLACEHOLDER` in place of `""`. Without them the whole change
+  // passes while every tool turn is refilled with a different fabricated
+  // sentence — a no-op with new wording.
+  // -----------------------------------------------------------------------
+
+  it("sends empty content on a tool-result turn, with the results as payload", async () => {
+    const assistantWithTool: AssistantMessage = {
+      role: "assistant",
+      content: [{ type: "toolCall", id: "tc1", name: "calc", arguments: { a: 2 } }],
+      api: "kiro-api",
+      provider: "kiro",
+      model: "claude-sonnet-4-5",
+      usage: zeroUsage,
+      stopReason: "toolUse",
+      timestamp: ts,
+    };
+    const context: Context = {
+      systemPrompt: "You are helpful",
+      messages: [
+        ...settledTurn(),
+        assistantWithTool,
+        {
+          role: "toolResult",
+          toolCallId: "tc1",
+          toolName: "calc",
+          content: [{ type: "text", text: "4" }],
+          isError: false,
+          timestamp: ts,
+        },
+      ],
+      tools: [{ name: "calc", description: "Calculate", parameters: { type: "object", properties: {} } }],
+    };
+    const mockFetch = mockFetchOk('{"content":"4."}{"contextUsagePercentage":2}');
+    vi.stubGlobal("fetch", mockFetch);
+
+    await collect(streamKiro(makeModel(), context, { apiKey: "tok" }));
+
+    const currentMsg = JSON.parse(mockFetch.mock.calls[0][1].body).conversationState.currentMessage.userInputMessage;
+    expect(currentMsg.content).toBe("");
+    expect(currentMsg.userInputMessageContext.toolResults).toHaveLength(1);
+    expect(currentMsg.userInputMessageContext.toolResults[0].toolUseId).toBe("tc1");
+
+    vi.unstubAllGlobals();
+  });
+
+  it("sends empty content when the turn is tool results alone", async () => {
+    const assistantWithTool: AssistantMessage = {
+      role: "assistant",
+      content: [{ type: "toolCall", id: "tc9", name: "calc", arguments: {} }],
+      api: "kiro-api",
+      provider: "kiro",
+      model: "claude-sonnet-4-5",
+      usage: zeroUsage,
+      stopReason: "toolUse",
+      timestamp: ts,
+    };
+    const context: Context = {
+      systemPrompt: "You are helpful",
+      messages: [
+        ...settledTurn(),
+        assistantWithTool,
+        {
+          role: "toolResult",
+          toolCallId: "tc9",
+          toolName: "calc",
+          content: [{ type: "text", text: "9" }],
+          isError: false,
+          timestamp: ts,
+        },
+        {
+          role: "toolResult",
+          toolCallId: "tc9",
+          toolName: "calc",
+          content: [{ type: "text", text: "9 again" }],
+          isError: false,
+          timestamp: ts,
+        },
+      ],
+      tools: [{ name: "calc", description: "Calculate", parameters: { type: "object", properties: {} } }],
+    };
+    const mockFetch = mockFetchOk('{"content":"9."}{"contextUsagePercentage":2}');
+    vi.stubGlobal("fetch", mockFetch);
+
+    await collect(streamKiro(makeModel(), context, { apiKey: "tok" }));
+
+    const currentMsg = JSON.parse(mockFetch.mock.calls[0][1].body).conversationState.currentMessage.userInputMessage;
+    expect(currentMsg.content).toBe("");
+    expect(currentMsg.userInputMessageContext.toolResults.length).toBeGreaterThan(0);
+
+    vi.unstubAllGlobals();
+  });
+
+  it("never puts carrier prose anywhere in a tool-turn request", async () => {
+    const assistantWithTool: AssistantMessage = {
+      role: "assistant",
+      content: [{ type: "toolCall", id: "tc1", name: "calc", arguments: {} }],
+      api: "kiro-api",
+      provider: "kiro",
+      model: "claude-sonnet-4-5",
+      usage: zeroUsage,
+      stopReason: "toolUse",
+      timestamp: ts,
+    };
+    const secondAssistant: AssistantMessage = {
+      role: "assistant",
+      content: [{ type: "toolCall", id: "tc2", name: "calc", arguments: {} }],
+      api: "kiro-api",
+      provider: "kiro",
+      model: "claude-sonnet-4-5",
+      usage: zeroUsage,
+      stopReason: "toolUse",
+      timestamp: ts,
+    };
+    const tr = (id: string, text: string): Context["messages"][number] => ({
+      role: "toolResult",
+      toolCallId: id,
+      toolName: "calc",
+      content: [{ type: "text", text }],
+      isError: false,
+      timestamp: ts,
+    });
+    const context: Context = {
+      systemPrompt: "You are helpful",
+      messages: [
+        { role: "user", content: "do the thing", timestamp: ts },
+        assistantWithTool,
+        tr("tc1", "one"),
+        secondAssistant,
+        tr("tc2", "two"),
+      ],
+      tools: [{ name: "calc", description: "Calculate", parameters: { type: "object", properties: {} } }],
+    };
+    const mockFetch = mockFetchOk('{"content":"done"}{"contextUsagePercentage":2}');
+    vi.stubGlobal("fetch", mockFetch);
+
+    await collect(streamKiro(makeModel(), context, { apiKey: "tok" }));
+
+    const body = mockFetch.mock.calls[0][1].body as string;
+    expect(body).not.toContain("Tool results provided");
+    // The one real user utterance survives verbatim.
+    const parsed = JSON.parse(body);
+    expect(parsed.conversationState.history[0].userInputMessage.content).toContain("do the thing");
+
+    vi.unstubAllGlobals();
+  });
+
+  // -----------------------------------------------------------------------
+  // The pre-send invariant check, exercised through `streamKiro` rather than
+  // through `validateKiroConversation` directly. Unit tests on the validator
+  // prove the rules; only these prove the request builder actually runs them.
+  //
+  // MUTATION PROBE: delete the `kiroConversationEntries`/
+  // `validateKiroConversation` block in stream.ts and the first of these goes
+  // red. Nothing else in the suite does — `tsc` still passes and biome reports
+  // the orphaned imports as a warning with exit 0.
+  //
+  // Reachability: `sanitizeHistory` repairs orphaned results inside `history`
+  // by synthesizing an `unknown_tool` toolUse, but the current message is
+  // assembled after that pass and is not covered by it. A tool result whose id
+  // matches no toolUse in the preceding assistant entry therefore survives to
+  // the check — the same shape the backend rejects as
+  // `400 TOOL_USE_RESULT_MISMATCH`.
+  // -----------------------------------------------------------------------
+
+  it("warns when the outbound tool structure violates an invariant", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const assistantWithTool: AssistantMessage = {
+      role: "assistant",
+      content: [{ type: "toolCall", id: "tcA", name: "calc", arguments: {} }],
+      api: "kiro-api",
+      provider: "kiro",
+      model: "claude-sonnet-4-5",
+      usage: zeroUsage,
+      stopReason: "toolUse",
+      timestamp: ts,
+    };
+    const context: Context = {
+      systemPrompt: "You are helpful",
+      messages: [
+        ...settledTurn(),
+        assistantWithTool,
+        // Answers `tcZ`, which no preceding toolUse issued.
+        {
+          role: "toolResult",
+          toolCallId: "tcZ",
+          toolName: "calc",
+          content: [{ type: "text", text: "orphan" }],
+          isError: false,
+          timestamp: ts,
+        },
+      ],
+      tools: [{ name: "calc", description: "Calculate", parameters: { type: "object", properties: {} } }],
+    };
+    const mockFetch = mockFetchOk('{"content":"ok"}{"contextUsagePercentage":2}');
+    vi.stubGlobal("fetch", mockFetch);
+
+    await collect(streamKiro(makeModel(), context, { apiKey: "tok" }));
+
+    const warned = warnSpy.mock.calls.map((c) => String(c[0])).join("\n");
+    expect(warned).toContain("outbound history violates");
+    expect(warned).toMatch(/TOOL_USES_AND_RESULTS|TOOL_RESULTS_ORPHAN_IDS/);
+    // Diagnostic only — the request still goes out.
+    expect(mockFetch).toHaveBeenCalled();
+
+    warnSpy.mockRestore();
+    vi.unstubAllGlobals();
+  });
+
+  it("stays silent on a well-formed tool turn", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const assistantWithTool: AssistantMessage = {
+      role: "assistant",
+      content: [{ type: "toolCall", id: "tcA", name: "calc", arguments: {} }],
+      api: "kiro-api",
+      provider: "kiro",
+      model: "claude-sonnet-4-5",
+      usage: zeroUsage,
+      stopReason: "toolUse",
+      timestamp: ts,
+    };
+    const context: Context = {
+      systemPrompt: "You are helpful",
+      messages: [
+        ...settledTurn(),
+        assistantWithTool,
+        {
+          role: "toolResult",
+          toolCallId: "tcA",
+          toolName: "calc",
+          content: [{ type: "text", text: "7" }],
+          isError: false,
+          timestamp: ts,
+        },
+      ],
+      tools: [{ name: "calc", description: "Calculate", parameters: { type: "object", properties: {} } }],
+    };
+    const mockFetch = mockFetchOk('{"content":"ok"}{"contextUsagePercentage":2}');
+    vi.stubGlobal("fetch", mockFetch);
+
+    await collect(streamKiro(makeModel(), context, { apiKey: "tok" }));
+
+    const warned = warnSpy.mock.calls.map((c) => String(c[0])).join("\n");
+    expect(warned).not.toContain("outbound history violates");
+
+    warnSpy.mockRestore();
+    vi.unstubAllGlobals();
+  });
+
+  // Probed 2026-08-11 before this test existed: this context reached the wire as
+  // `currentMessage.userInputMessage` with populated `toolResults`, no `history`
+  // at all, and no `toolUse` anywhere — the exact shape the backend rejects as
+  // `TOOL_USE_RESULT_MISMATCH` — while the invariant check stayed silent, because
+  // the pairwise walk only inspects a carrier that follows an assistant entry.
+  //
+  // MUTATION PROBE: drop the unpaired-carrier pass at the end of
+  // `validateToolUsesAndResults` and this goes red.
+  it("warns when a tool-result carrier has no toolUse anywhere", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const context: Context = {
+      systemPrompt: "You are helpful",
+      messages: [
+        // No assistant turn ever issued `tcZ`. `sanitizeHistory` cannot repair
+        // this one: the carrier is the current message, not a history entry.
+        {
+          role: "toolResult",
+          toolCallId: "tcZ",
+          toolName: "calc",
+          content: [{ type: "text", text: "orphan" }],
+          isError: false,
+          timestamp: ts,
+        },
+      ],
+      tools: [{ name: "calc", description: "Calculate", parameters: { type: "object", properties: {} } }],
+    };
+    const mockFetch = mockFetchOk('{"content":"ok"}{"contextUsagePercentage":2}');
+    vi.stubGlobal("fetch", mockFetch);
+
+    await collect(
+      streamKiro(makeModel({ kiroProfileArn: "arn:aws:codewhisperer:us-east-1:0:profile/X" }), context, {
+        apiKey: "tok",
+      }),
+    );
+
+    const warned = warnSpy.mock.calls.map((c) => String(c[0])).join("\n");
+    expect(warned).toContain("outbound history violates");
+    expect(warned).toContain("TOOL_RESULTS_AND_NO_USES");
+    // Diagnostic only — the request still goes out.
+    const body = mockFetch.mock.calls[0][1].body as string;
+    expect(
+      JSON.parse(body).conversationState.currentMessage.userInputMessage.userInputMessageContext.toolResults,
+    ).toHaveLength(1);
+
+    warnSpy.mockRestore();
     vi.unstubAllGlobals();
   });
 

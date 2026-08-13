@@ -438,4 +438,34 @@ describe("Feature 1: Extension Registration", () => {
       ]),
     );
   });
+
+  // Extension **entry module** surface — not an npm package entry point.
+  //
+  // `pi.extensions: ["./dist/index.js"]` tells the pi host which module to load.
+  // It is not a bare-specifier entry: `package.json` declares no `main`,
+  // `exports`, or `types`, and the build emits no declarations, so
+  // `import { validateKiroConversation } from "pi-provider-kiro"` does not
+  // resolve from the published tarball (verified 2026-08-11 by packing and
+  // importing in an isolated consumer: `ERR_MODULE_NOT_FOUND`). This pins that
+  // the symbols leave this module; giving them a resolvable package entry is a
+  // packaging change owned separately.
+  it("re-exports the history validator surface from the entry module", async () => {
+    const mod = await import("../src/index.js");
+    for (const name of [
+      "validateKiroConversation",
+      "validateKiroToolStructure",
+      "repairKiroConversation",
+      "kiroConversationEntries",
+      "isKiroToolStructureRule",
+    ] as const) {
+      expect(typeof mod[name], name).toBe("function");
+    }
+    expect(mod.KiroValidationRule.NON_EMPTY_USER_MESSAGE).toBe("NON_EMPTY_USER_MESSAGE");
+    expect(mod.KIRO_TOOL_STRUCTURE_RULES).toHaveLength(3);
+    expect(mod.KIRO_VALIDATION_MESSAGES.NON_EMPTY_USER_MESSAGE).toBe(
+      "User messages must have either content or tool results",
+    );
+    expect(mod.SYNTHETIC_FAILED_TOOL_RESULT_TEXT).toBe("Tool use was interrupted and did not produce a result.");
+    expect(mod.EMPTY_CONTENT_PLACEHOLDER).toBe("Please proceed with the task.");
+  });
 });

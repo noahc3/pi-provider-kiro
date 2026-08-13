@@ -46,12 +46,25 @@ export interface KiroHistoryEntry {
 
 export const TOOL_RESULT_LIMIT = 250000;
 
-/** Kiro rejects a current message whose `content` is empty with a 400
- *  "Improperly formed request." (reason `REQUEST_BODY_INVALID`) — the field is
- *  required even when the turn carries its payload elsewhere (images, tool
- *  results). A turn can legitimately reach the request builder with no text:
- *  an image-only user message, or a user message whose text is empty. Send a
- *  neutral prompt in that case so the attachments still reach the model. */
+/** Kiro's own requirement is content **or** tool results, not content
+ *  unconditionally. First-party Kiro Agent states it as an explicit invariant
+ *  — `NON_EMPTY_USER_MESSAGE`: "User messages must have either content or tool
+ *  results" — and its validator implements `hasContent || hasToolResults`
+ *  (`packages/kiro-agent/src/utils/message-history-sanitizer/validator.ts`).
+ *  It ships `content: ''` on synthesized and consolidated tool turns.
+ *
+ *  A tool turn therefore needs no text: its payload is
+ *  `userInputMessageContext.toolResults`. Wire-probed 2026-08-11 against
+ *  `runtime.us-east-1.kiro.dev/generateAssistantResponse` with
+ *  `origin: "KIRO_CLI"`, `content: ""` and a populated `toolResults` — HTTP
+ *  200, request id c5e6832d-f6da-4e33-a5e9-2e6107dbcf83.
+ *
+ *  This placeholder remains for the case it was added for (#106): a turn that
+ *  reaches the request builder with neither text nor tool results — an
+ *  image-only user message, an empty-text user message, or a host-appended
+ *  message whose role falls outside pi-ai's `Message` union. Send a neutral
+ *  prompt there so the attachments still reach the model. Do not apply it to
+ *  tool turns; that fabricates a user utterance the model reads as human. */
 export const EMPTY_CONTENT_PLACEHOLDER = "Please proceed with the task.";
 
 export function sanitizeSurrogates(text: string): string {
@@ -202,8 +215,11 @@ export function buildHistory(
       const lastEntryForTr = history[history.length - 1];
       const prevTr = lastEntryForTr?.userInputMessage;
       if (prevTr) {
-        // Merge tool results into previous user message to maintain alternation without synthetic padding
-        prevTr.content += "\n\nTool results provided.";
+        // Merge tool results into the previous user message to maintain
+        // alternation without synthetic padding. Its `content` is the text a
+        // user actually wrote (or a prior turn's tool carrier) — leave it
+        // byte-identical. `toolResults` is the payload; text is not needed to
+        // carry it, and appending narration here rewrites a human utterance.
         if (trImages.length > 0) prevTr.images = [...(prevTr.images || []), ...convertImagesToKiro(trImages)];
         if (!prevTr.userInputMessageContext) prevTr.userInputMessageContext = {};
         prevTr.userInputMessageContext.toolResults = [
@@ -213,7 +229,9 @@ export function buildHistory(
       } else {
         history.push({
           userInputMessage: {
-            content: "Tool results provided.",
+            // Empty by design: `toolResults` is this turn's payload. See
+            // EMPTY_CONTENT_PLACEHOLDER for the content-or-toolResults rule.
+            content: "",
             modelId,
             origin: "KIRO_CLI",
             ...(trImages.length > 0 ? { images: convertImagesToKiro(trImages) } : {}),

@@ -38,6 +38,7 @@ import {
   HISTORY_LIMIT_CONTEXT_WINDOW,
   prepareHistory,
 } from "./history.js";
+import { isKiroToolStructureRule, kiroConversationEntries, validateKiroConversation } from "./history-validator.js";
 import { getKiroCliCredentials, getKiroCliCredentialsAllowExpired, refreshViaKiroCli } from "./kiro-cli.js";
 import {
   invalidateKiroProfileArn,
@@ -539,7 +540,10 @@ export function streamKiro(
             const converted = convertImagesToKiro(toolResultImages);
             currentImages = currentImages ? [...currentImages, ...converted] : converted;
           }
-          currentContent = currentToolResults.length > 0 ? "Tool results provided." : "Please proceed with the task.";
+          // A tool turn carries its payload in `userInputMessageContext.toolResults`,
+          // so it needs no text. Leaving this empty also leaves the fallback
+          // below free to fill in only genuinely payload-less turns.
+          currentContent = "";
         } else if (firstMsg?.role === "toolResult") {
           const toolResultImages2: ImageContent[] = [];
           for (const m of currentMessages)
@@ -557,7 +561,8 @@ export function streamKiro(
             const converted = convertImagesToKiro(toolResultImages2);
             currentImages = currentImages ? [...currentImages, ...converted] : converted;
           }
-          currentContent = "Tool results provided.";
+          // Empty by design — `toolResults` is this turn's payload.
+          currentContent = "";
         } else if (firstMsg?.role === "user") {
           currentContent = typeof firstMsg.content === "string" ? firstMsg.content : getContentText(firstMsg);
           if (effectiveSystemPrompt && !systemPrepended)
@@ -568,7 +573,7 @@ export function streamKiro(
         assertHistoryWithinLimit(history, dynamicHistoryLimit);
         // Prepend truncation notice if the previous assistant response was cut off
         if (wasPreviousResponseTruncated(context.messages)) {
-          currentContent = `${TRUNCATION_NOTICE}\n\n${currentContent}`;
+          currentContent = currentContent === "" ? TRUNCATION_NOTICE : `${TRUNCATION_NOTICE}\n\n${currentContent}`;
         }
         // Always synthesize placeholder specs for tool names referenced in
         // history, even when context.tools is empty/undefined. Without this,
@@ -587,12 +592,45 @@ export function streamKiro(
           const imgs = extractImages(firstMsg);
           if (imgs.length > 0) currentImages = convertImagesToKiro(imgs as ImageContent[]);
         }
-        // `content` is required: Kiro answers an empty one with a 400
-        // "Improperly formed request." Fall back to a neutral prompt so a turn
-        // that carries only images (or an empty-text user message) still sends.
-        if (currentContent === "") currentContent = EMPTY_CONTENT_PLACEHOLDER;
+        // A turn with neither text nor tool results has no payload at all:
+        // an image-only user message, an empty-text user message, or a
+        // host-appended message whose role falls outside pi-ai's `Message`
+        // union. Send a neutral prompt so its attachments still reach the
+        // model (#106).
+        //
+        // The `currentToolResults` guard is load-bearing. Without it this line
+        // refills every tool turn that deliberately left `currentContent`
+        // empty, and the only change is which sentence is fabricated. Kiro's
+        // rule is content **or** tool results — see EMPTY_CONTENT_PLACEHOLDER.
+        if (currentContent === "" && currentToolResults.length === 0) currentContent = EMPTY_CONTENT_PLACEHOLDER;
         // kiro-cli does not enforce alternation — the API accepts
         // non-alternating history. No synthetic padding needed.
+        //
+        // Pre-send invariant check against the seven rules first-party Kiro
+        // Agent enforces. Diagnostic only: `prepareHistory` already repairs the
+        // shapes this provider produces, so a violation here is a shape it does
+        // not cover. Never thrown — failing closed would change behavior for
+        // callers whose histories send fine today. Tool-structure violations get
+        // a warning because the backend does reject those
+        // (`400 TOOL_USE_RESULT_MISMATCH`).
+        const conversationEntries = kiroConversationEntries(history, {
+          content: currentContent,
+          modelId: kiroModelId,
+          origin: "KIRO_CLI",
+          ...(uimc ? { userInputMessageContext: uimc } : {}),
+        });
+        const invariants = validateKiroConversation(conversationEntries);
+        if (!invariants.valid) {
+          debugLog("request.invariants", { errors: invariants.errors });
+          const structural = invariants.errors.filter((e) => isKiroToolStructureRule(e.rule));
+          if (structural.length > 0) {
+            console.warn(
+              `[pi-provider-kiro] outbound history violates ${structural
+                .map((e) => `${e.rule}@${e.index}`)
+                .join(", ")} — Kiro may reject this request`,
+            );
+          }
+        }
         const request: KiroRequest = {
           conversationState: {
             chatTriggerType: "MANUAL",

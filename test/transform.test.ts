@@ -210,6 +210,58 @@ describe("Feature 5: Message Transformation", () => {
       expect(assistantPadding).toHaveLength(0);
     });
 
+    it("leaves the prior real user message byte-identical when tool results merge into it", () => {
+      // A toolResult directly after a user turn, with no assistant entry between,
+      // takes the merge branch: the results attach to the existing user entry
+      // rather than creating a new one. The merged entry's text must stay
+      // exactly what the user wrote — regression for the carrier prose that
+      // used to be appended onto it.
+      const msgs: Message[] = [user("go"), toolResult("tc1", "ok"), assistant("done"), user("next")];
+      const { history } = buildHistory(msgs, "M");
+      const carrier = history.find((h) => h.userInputMessage?.userInputMessageContext?.toolResults);
+
+      expect(carrier?.userInputMessage?.content).toBe("go");
+      expect(carrier?.userInputMessage?.userInputMessageContext?.toolResults).toHaveLength(1);
+      expect(JSON.stringify(history)).not.toContain("Tool results provided");
+    });
+
+    it("gives a standalone tool-result entry empty content, not carrier prose", () => {
+      const a = assistant("");
+      a.content = [{ type: "toolCall", id: "tc1", name: "a", arguments: {} }];
+      // The tool result lands after an assistant entry, so it becomes its own
+      // entry rather than merging.
+      const msgs: Message[] = [user("go"), a, toolResult("tc1", "ok"), assistant("done"), user("next")];
+      const { history } = buildHistory(msgs, "M");
+      const carrier = history.find((h) => h.userInputMessage?.userInputMessageContext?.toolResults);
+
+      expect(carrier?.userInputMessage?.content).toBe("");
+      expect(carrier?.userInputMessage?.userInputMessageContext?.toolResults?.[0].toolUseId).toBe("tc1");
+      expect(JSON.stringify(history)).not.toContain("Tool results provided");
+    });
+
+    it("keeps the system prompt intact on a user message that also carries tool results", () => {
+      const msgs: Message[] = [user("go"), toolResult("tc1", "ok"), assistant("done"), user("next")];
+      const { history } = buildHistory(msgs, "M", "SYSTEM");
+      const carrier = history.find((h) => h.userInputMessage?.userInputMessageContext?.toolResults);
+
+      expect(carrier?.userInputMessage?.content).toBe("SYSTEM\n\ngo");
+    });
+
+    it("merges a run of tool results into one user entry without repeating carrier text", () => {
+      const msgs: Message[] = [
+        user("go"),
+        toolResult("tc1", "one"),
+        toolResult("tc2", "two"),
+        assistant("done"),
+        user("next"),
+      ];
+      const { history } = buildHistory(msgs, "M");
+      const carrier = history.find((h) => h.userInputMessage?.userInputMessageContext?.toolResults);
+
+      expect(carrier?.userInputMessage?.content).toBe("go");
+      expect(carrier?.userInputMessage?.userInputMessageContext?.toolResults).toHaveLength(2);
+    });
+
     it("never contains synthetic padding in long agentic sessions", () => {
       const msgs: Message[] = [user("start")];
       for (let i = 0; i < 20; i++) {
