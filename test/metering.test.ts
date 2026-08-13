@@ -17,8 +17,8 @@ describe("Kiro credit metering", () => {
     expect(claimRootMeteringSession("subagent")).toBe(false);
     expect(beginKiroMeteringCollection("root")).toBe(true);
 
-    recordKiroMetering({ usage: 0.125, unit: "credit", unitPlural: "credits" });
-    recordKiroMetering({ usage: 0.375, unit: "credit", unitPlural: "credits" });
+    recordKiroMetering({ credits: 0.125, unit: "credit", unitPlural: "credits" });
+    recordKiroMetering({ credits: 0.375, unit: "credit", unitPlural: "credits" });
 
     expect(finishKiroMeteringCollection("root")).toEqual({
       usage: 0.5,
@@ -31,9 +31,9 @@ describe("Kiro credit metering", () => {
   it("keeps one collection through low-level retries", () => {
     claimRootMeteringSession("root");
     beginKiroMeteringCollection("root");
-    recordKiroMetering({ usage: 0.2 });
+    recordKiroMetering({ credits: 0.2 });
     beginKiroMeteringCollection("root");
-    recordKiroMetering({ usage: 0.3 });
+    recordKiroMetering({ credits: 0.3 });
 
     expect(finishKiroMeteringCollection("root")?.usage).toBeCloseTo(0.5);
   });
@@ -41,7 +41,7 @@ describe("Kiro credit metering", () => {
   it("does not let a nested session finish the root collection", () => {
     claimRootMeteringSession("root");
     beginKiroMeteringCollection("root");
-    recordKiroMetering({ usage: 1 });
+    recordKiroMetering({ credits: 1 });
 
     expect(finishKiroMeteringCollection("subagent")).toBeUndefined();
     expect(finishKiroMeteringCollection("root")?.usage).toBe(1);
@@ -50,9 +50,9 @@ describe("Kiro credit metering", () => {
   it("ignores invalid usage values and formats the summary", () => {
     claimRootMeteringSession("root");
     beginKiroMeteringCollection("root");
-    recordKiroMetering({ usage: Number.NaN });
-    recordKiroMetering({ usage: -1 });
-    recordKiroMetering({ usage: 0.123456, unit: "credit", unitPlural: "credits" });
+    recordKiroMetering({ credits: Number.NaN });
+    recordKiroMetering({ credits: -1 });
+    recordKiroMetering({ credits: 0.123456, unit: "credit", unitPlural: "credits" });
 
     const summary = finishKiroMeteringCollection("root");
     expect(summary).toBeDefined();

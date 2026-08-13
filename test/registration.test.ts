@@ -225,8 +225,8 @@ describe("Feature 1: Extension Registration", () => {
     await handlers.get("before_agent_start")?.({}, ctx);
 
     const { recordKiroMetering } = await import("../src/metering.js");
-    recordKiroMetering({ usage: 0.25, unit: "credit", unitPlural: "credits" });
-    recordKiroMetering({ usage: 0.5, unit: "credit", unitPlural: "credits" });
+    recordKiroMetering({ credits: 0.25, unit: "credit", unitPlural: "credits" });
+    recordKiroMetering({ credits: 0.5, unit: "credit", unitPlural: "credits" });
     await handlers.get("agent_settled")?.({}, ctx);
 
     expect(appendEntry).toHaveBeenCalledWith(

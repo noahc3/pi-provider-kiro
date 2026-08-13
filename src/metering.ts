@@ -1,8 +1,16 @@
 // ABOUTME: Aggregates streamed Kiro credit metering for one root pi interaction.
 // ABOUTME: Uses globalThis so in-process subagent extension instances share the same collector.
 
+/**
+ * One `MeteringEvent` frame as parsed by event-parser.
+ *
+ * `credits` mirrors the wire field name chosen upstream (`MeteringEvent.usage`
+ * is a COUNT OF CREDITS, not tokens). The accumulated total in
+ * {@link KiroMeteringSummary} stays `usage` — that is this module's own running
+ * sum, not a wire field.
+ */
 export interface KiroMeteringData {
-  usage?: number;
+  credits?: number;
   unit?: string;
   unitPlural?: string;
 }
@@ -56,9 +64,9 @@ export function beginKiroMeteringCollection(sessionId: string): boolean {
 /** Record immediately so metering received before an abort or retry is not lost. */
 export function recordKiroMetering(data: KiroMeteringData): void {
   const collection = getState().collection;
-  if (!collection || data.usage === undefined || !Number.isFinite(data.usage) || data.usage < 0) return;
+  if (!collection || data.credits === undefined || !Number.isFinite(data.credits) || data.credits < 0) return;
 
-  collection.usage += data.usage;
+  collection.usage += data.credits;
   collection.requestCount++;
   collection.unit ??= data.unit;
   collection.unitPlural ??= data.unitPlural;
