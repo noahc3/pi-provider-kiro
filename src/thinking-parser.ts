@@ -38,7 +38,6 @@ function getMaxTrailingPossibleTagPrefixLength(text: string, tags: string[]): nu
 export class ThinkingTagParser {
   private textBuffer = "";
   private inThinking = false;
-  private thinkingExtracted = false;
   private thinkingBlockIndex: number | null = null;
   private textBlockIndex: number | null = null;
   private lastTextBlockIndex: number | null = null;
@@ -53,7 +52,7 @@ export class ThinkingTagParser {
     this.textBuffer += chunk;
     while (this.textBuffer.length > 0) {
       const prevLength = this.textBuffer.length;
-      if (!this.inThinking && !this.thinkingExtracted) {
+      if (!this.inThinking) {
         this.processBeforeThinking();
         if (this.textBuffer.length === 0) break;
       }
@@ -61,10 +60,7 @@ export class ThinkingTagParser {
         this.processInsideThinking();
         if (this.textBuffer.length === 0) break;
       }
-      if (this.thinkingExtracted) {
-        this.processAfterThinking();
-        break;
-      }
+      // No progress: the remainder is a held-back partial tag prefix.
       if (this.textBuffer.length >= prevLength) break;
     }
   }
@@ -140,8 +136,14 @@ export class ThinkingTagParser {
       }
       this.textBuffer = this.textBuffer.slice(endPos + this.activeEndTag.length);
       this.inThinking = false;
-      this.thinkingExtracted = true;
-      this.lastTextBlockIndex = this.textBlockIndex;
+      // Reset so a later region in the same message opens its own thinking
+      // block instead of appending to this one.
+      this.thinkingBlockIndex = null;
+      this.activeEndTag = THINKING_END_TAG;
+      // Only advance the remembered index: back-to-back regions with no text
+      // between them would otherwise clobber a real index with null, and
+      // `getTextBlockIndex()` would report no text block to `stream.ts`.
+      if (this.textBlockIndex !== null) this.lastTextBlockIndex = this.textBlockIndex;
       this.textBlockIndex = null;
       if (this.textBuffer.startsWith("\n\n")) this.textBuffer = this.textBuffer.slice(2);
       return;
@@ -153,11 +155,6 @@ export class ThinkingTagParser {
       this.emitThinking(this.textBuffer.slice(0, safeLen));
       this.textBuffer = this.textBuffer.slice(safeLen);
     }
-  }
-
-  private processAfterThinking(): void {
-    this.emitText(this.textBuffer);
-    this.textBuffer = "";
   }
 
   private emitText(text: string): void {
@@ -175,17 +172,12 @@ export class ThinkingTagParser {
   private emitThinking(thinking: string): void {
     if (!thinking) return;
     if (this.thinkingBlockIndex === null) {
-      if (this.textBlockIndex !== null) {
-        // Thinking arrived after text was already emitted (Kiro API sends
-        // text before thinking content). Insert the thinking block before
-        // the text block so the content array order is thinking → text.
-        this.thinkingBlockIndex = this.textBlockIndex;
-        this.output.content.splice(this.thinkingBlockIndex, 0, { type: "thinking", thinking: "" });
-        this.textBlockIndex = this.textBlockIndex + 1;
-      } else {
-        this.thinkingBlockIndex = this.output.content.length;
-        this.output.content.push({ type: "thinking", thinking: "" });
-      }
+      // Always append, never splice: blocks keep wire order and a
+      // `contentIndex` names one block for the whole stream. Splicing ahead of
+      // earlier text would strand every index already emitted, and pi-ai has no
+      // reindex event to correct it. Presentation order is the renderer's job.
+      this.thinkingBlockIndex = this.output.content.length;
+      this.output.content.push({ type: "thinking", thinking: "" });
       this.stream.push({ type: "thinking_start", contentIndex: this.thinkingBlockIndex, partial: this.output });
     }
     const block = this.output.content[this.thinkingBlockIndex] as ThinkingContent;
