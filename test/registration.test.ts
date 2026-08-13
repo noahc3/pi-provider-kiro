@@ -89,28 +89,40 @@ describe("Feature 1: Extension Registration", () => {
     expect(command?.description).toContain("session and monthly credit usage");
 
     const notify = vi.fn();
+    // Relative so the countdown assertion below cannot rot once a fixed date passes.
+    const nextDateReset = Math.floor(Date.now() / 1000) + 30 * 86_400;
     vi.stubGlobal(
       "fetch",
-      vi.fn().mockResolvedValue({
-        ok: true,
-        json: () =>
-          Promise.resolve({
-            nextDateReset: 1785542400,
-            daysUntilReset: 0,
-            subscriptionInfo: { subscriptionTitle: "KIRO PRO" },
-            usageBreakdown: {
-              resourceType: "CREDIT",
-              displayName: "Credits",
-              currentUsage: 12,
-              currentUsageWithPrecision: 12.375,
-              currentOverages: 0,
-              usageLimit: 1000,
-              usageLimitWithPrecision: 1000,
-              nextDateReset: 1785542400,
-              overageCharges: 0,
-            },
-          }),
-      }),
+      vi
+        .fn()
+        // Usage now resolves the profile ARN first via ListAvailableProfiles.
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              profiles: [{ arn: "arn:aws:codewhisperer:us-east-1:123456789012:profile/test" }],
+            }),
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              nextDateReset,
+              daysUntilReset: 0,
+              subscriptionInfo: { subscriptionTitle: "KIRO PRO" },
+              usageBreakdown: {
+                resourceType: "CREDIT",
+                displayName: "Credits",
+                currentUsage: 12,
+                currentUsageWithPrecision: 12.375,
+                currentOverages: 0,
+                usageLimit: 1000,
+                usageLimitWithPrecision: 1000,
+                nextDateReset,
+                overageCharges: 0,
+              },
+            }),
+        }),
     );
 
     await command.handler("", {
