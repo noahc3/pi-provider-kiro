@@ -165,6 +165,87 @@ async function resolveProfileArnAfterRefresh(auth: KiroManagementAuth): Promise<
   }
 }
 
+/**
+ * Pluralise an observed-attempt count for a diagnostic. The count is what was
+ * actually seen, not the configured retry budget: the two diverge whenever a
+ * 403 refresh, a timeout or a mid-stream error already spent part of the shared
+ * budget, and a diagnostic that exists to explain a silent failure must not
+ * itself assert something that did not happen.
+ *
+ * Deliberately not worded as "consecutive": the degenerate attempts need not be
+ * adjacent. A 403 credential refresh or a mid-stream error can land between two
+ * of them and spend the same shared budget, so an unqualified count is the only
+ * claim the counter can actually support.
+ */
+function describeAttempts(count: number): string {
+  return count === 1 ? "1 attempt" : `${count} attempts`;
+}
+
+/**
+ * Cap for wire-derived text quoted into a persisted `errorMessage`. The echoed
+ * response and the tool names both come from the model, and this string is
+ * written into the assistant record, so neither may be quoted unbounded: the
+ * echo pattern `/^\s*(continue|\.+)\s*$/i` admits an arbitrarily long run of
+ * dots. Matches the 200-char cap already used for raw tool input in
+ * `emitToolCall`'s parse warning below.
+ */
+const DIAGNOSTIC_QUOTE_LIMIT = 200;
+
+/**
+ * INVARIANT: no unbounded integer may be interpolated into a persisted
+ * `errorMessage`. Consumers classify that string by pattern-matching its text,
+ * and the predicate in the wild (Kermes `isRetryableStreamError`) matches bare
+ * `429|500|502|503|504` with NO word boundary. So a `(5000 chars total)`
+ * annotation makes a diagnostic that says "terminal, do not retry" read as a
+ * transient HTTP 500 and get suppressed — precisely the silent failure these
+ * diagnostics exist to defeat, reintroduced by the diagnostic itself.
+ *
+ * Hence the truncation marker carries no length: the exact length goes to
+ * `console.warn`, which no classifier reads. The only integer these diagnostics
+ * interpolate is the observed-attempt count, bounded by `maxRetries + 1` = 4.
+ *
+ * Residual: a tool NAME is model-chosen and quoted verbatim, so the invariant
+ * holds only for the integers this code composes — not for wire text. A tool
+ * called `set_timeout` matches that predicate's `timeout` alternative, and one
+ * called `http500_probe` matches the bare `500` alternative just as the removed
+ * `(5000 chars total)` annotation did. Mangling the name would defeat the point
+ * of reporting which call was lost, so it is quoted as received and the
+ * collision is accepted.
+ */
+function clampForDiagnostic(text: string): string {
+  return text.length <= DIAGNOSTIC_QUOTE_LIMIT ? text : `${text.slice(0, DIAGNOSTIC_QUOTE_LIMIT)}… (truncated)`;
+}
+
+/**
+ * What the MESSAGE carries, for the exhausted-empty-response diagnostic. "No
+ * text and no tool calls" does NOT imply empty content: a reasoning turn that
+ * emits only `thinkingText` and then ends is degenerate by that test while
+ * `output.content` still holds its thinking block, and a `ThinkingTagParser`
+ * turn can leave a zero-length text block behind. Claiming `empty content`
+ * there would assert something not observed.
+ *
+ * `residue` distinguishes blocks this attempt produced from blocks a DISCARDED
+ * attempt left behind. `output.content` is reset on the degenerate retry but not
+ * on the mid-stream-error retry, while `textBlockIndex` is per-attempt — so a
+ * turn that streamed text and then failed, retried, and came back empty ends up
+ * with `hasText === false` over a content array that still holds the earlier
+ * attempt's text. Wording that as "returning only text content" flatly
+ * contradicts the "no text" clause in the same sentence, so the two cases must
+ * read differently.
+ *
+ * Block TYPES only, never a count: a count is an unbounded integer, which the
+ * invariant above forbids. The type vocabulary is pi's own fixed set of content
+ * discriminants, so it carries no digits and no wire-controlled text.
+ */
+function describeReturnedContent(content: AssistantMessage["content"], residue: boolean): string {
+  const kinds = [...new Set(content.map((block) => block.type))].sort();
+  if (kinds.length === 0) return "returning empty content";
+  const joined = kinds.join(" and ");
+  return residue
+    ? `returning only ${joined} content left by earlier discarded attempts`
+    : `returning only ${joined} content`;
+}
+
 function emitToolCall(
   state: KiroToolCallState,
   output: AssistantMessage,
@@ -181,6 +262,10 @@ function emitToolCall(
   try {
     args = JSON.parse(state.input) as Record<string, unknown>;
   } catch (e) {
+    // Returning false drops the call: nothing is pushed into `output.content`,
+    // so the call the model made never reaches the agent. Callers record the
+    // name in `droppedToolCalls` so the turn can carry an `errorMessage` about
+    // it — a console warning is invisible to whoever reads the transcript.
     console.warn(
       `[pi-provider-kiro] Failed to parse tool input for "${state.name}" (toolUseId: ${state.toolUseId}): ${formatSafeError(e)}. Raw input (${state.input.length} chars): ${redactSensitiveText(state.input.substring(0, 200))}`,
     );
@@ -327,6 +412,21 @@ export function streamKiro(
       // `capacityRetryCount` resets on every outer iteration.
       let credentialRefreshTotal = 0;
       let capacityRetryTotal = 0;
+      /** Degenerate attempts, counted BY SHAPE. Both are counted separately from
+       *  `retryCount`, which is the shared retry budget also spent by 403 credential
+       *  refreshes, idle/first-token timeouts and mid-stream errors — so
+       *  `maxRetries + 1` is NOT the number of empty attempts, and reporting it as
+       *  such overstates what was observed.
+       *
+       *  Split rather than pooled because the two shapes are not interchangeable and
+       *  the exhaustion diagnostic is worded from the LAST attempt's shape only. The
+       *  model can echo on one attempt and return nothing on the next; a single
+       *  pooled counter would then make "returned no text ... on 4 attempts" out of
+       *  three empty attempts and one that did carry text, or claim four echoes from
+       *  one. Each diagnostic reports its own shape's count and, when the other shape
+       *  also occurred, names it separately. */
+      let emptyAttempts = 0;
+      let echoAttempts = 0;
       const conversationId = options?.sessionId ?? crypto.randomUUID();
       while (retryCount <= maxRetries) {
         if (options?.signal?.aborted) throw options.signal.reason;
@@ -653,10 +753,15 @@ export function streamKiro(
         let textBlockIndex: number | null = null;
         let emittedToolCalls = 0;
         let sawAnyToolCalls = false;
+        /** Names of tool calls `emitToolCall` refused because their arguments would
+         *  not parse. Per-attempt, like `emittedToolCalls`: a retry must not inherit
+         *  a discarded attempt's drops. */
+        const droppedToolCalls: string[] = [];
         let currentToolCall: KiroToolCallState | null = null;
         const flushToolCall = () => {
           if (!currentToolCall) return;
           if (emitToolCall(currentToolCall, output, stream)) emittedToolCalls++;
+          else droppedToolCalls.push(currentToolCall.name);
           currentToolCall = null;
         };
         const IDLE_TIMEOUT = 300_000;
@@ -838,8 +943,9 @@ export function streamKiro(
           }
           throw new Error(`Kiro API error: ${firstTokenTimedOut ? "first token" : "idle"} timeout after max retries`);
         }
-        if (currentToolCall && emitToolCall(currentToolCall, output, stream)) {
-          emittedToolCalls++;
+        if (currentToolCall) {
+          if (emitToolCall(currentToolCall, output, stream)) emittedToolCalls++;
+          else droppedToolCalls.push(currentToolCall.name);
         }
         endNativeThinking();
         if (thinkingParser) {
@@ -847,6 +953,13 @@ export function streamKiro(
           textBlockIndex = thinkingParser.getTextBlockIndex();
         }
         // Fallback: extract bracket-style tool calls from content if no native tool calls
+        //
+        // Deliberately still gated on `sawAnyToolCalls`, so it does NOT run when a
+        // native call arrived and was dropped for unparseable arguments. Widening it
+        // to `emittedToolCalls === 0` would enable text recovery on exactly the path
+        // where `KiroModel.recoverTextToolCalls === false` says not to (Claude), and
+        // that flag is not consumed here yet — so the widening cannot be made
+        // model-aware without first wiring it. The drop is reported instead.
         if (!sawAnyToolCalls && textBlockIndex !== null) {
           const textBlock = output.content[textBlockIndex] as TextContent;
           const bracketResult = parseBracketToolCalls(textBlock.text);
@@ -866,6 +979,16 @@ export function streamKiro(
                 )
               ) {
                 emittedToolCalls++;
+              } else {
+                // Unreachable as written, and kept deliberately. `btc.arguments` is
+                // itself a successful `JSON.parse` result (see bracket-tool-parser),
+                // so `JSON.stringify` of it always round-trips and `emitToolCall`'s
+                // only `false` return — a `JSON.parse` throw — cannot fire here. No
+                // test pins this branch, because no wire input can reach it. It stays
+                // so that a future parser change passing raw text through cannot
+                // silently reintroduce the very dropped-call blindness this change
+                // exists to remove.
+                droppedToolCalls.push(btc.name);
               }
             }
           }
@@ -922,8 +1045,25 @@ export function streamKiro(
         const hasText = textBlockIndex !== null && (output.content[textBlockIndex] as TextContent).text.length > 0;
         const responseText = hasText ? (output.content[textBlockIndex as number] as TextContent).text : "";
         const isEchoLoop = hasText && !sawAnyToolCalls && /^\s*(continue|\.+)\s*$/i.test(responseText);
-        if ((!hasText && !sawAnyToolCalls) || isEchoLoop) {
-          if (retryCount < maxRetries) {
+        const degenerate = (!hasText && !sawAnyToolCalls) || isEchoLoop;
+        if (isEchoLoop) echoAttempts++;
+        else if (degenerate) emptyAttempts++;
+        const exhausted = degenerate && retryCount >= maxRetries;
+        // Use emittedToolCalls (not toolCalls.length) to avoid stopReason:"toolUse"
+        // when all tool calls were skipped due to empty/unparseable input — that
+        // combination (empty content + toolUse stop) causes pi's agent loop to
+        // stall waiting for tool results that will never arrive.
+        //
+        // Resolved BEFORE the retry-exhaustion warnings below so those warnings can
+        // report the value actually assigned. It reads only `receivedContextUsage`
+        // and `emittedToolCalls`, neither of which the exhaustion branch touches.
+        if (!receivedContextUsage && emittedToolCalls === 0) {
+          output.stopReason = "length";
+        } else {
+          output.stopReason = emittedToolCalls > 0 ? "toolUse" : "stop";
+        }
+        if (degenerate) {
+          if (!exhausted) {
             retryCount++;
             const delayMs = exponentialBackoff(retryCount - 1, 1000, MAX_RETRY_DELAY);
             console.warn(
@@ -935,27 +1075,102 @@ export function streamKiro(
             await abortableDelay(delayMs, options?.signal);
             continue;
           }
+          // Retries are spent and the turn still carries nothing usable. The
+          // stopReason has to stay in pi's existing union (a new member would
+          // break every peer), so the only channel that can say a turn failed
+          // while it still looks successful is `errorMessage`. Without it these
+          // turns are indistinguishable from an ordinary completion.
+          //
+          // Deliberately NOT worded as a transient/transport failure: this is
+          // terminal, so consumer retry classifiers must not match it and hand
+          // it another doomed attempt. Consumers split three ways on the exact
+          // strings below, measured rather than assumed:
+          //
+          //  - Read the field with NO stopReason gate, and fail the run on any
+          //    non-retryable value: Kermes `headless.ts` (`exit = 1`) and
+          //    `acp_server/agent.ts` (`hadError`). These are the paths the
+          //    diagnostic actually reaches, and because it is worded terminal it
+          //    is NOT suppressed — a silent turn that used to exit 0 now fails
+          //    loudly. That is the intended consequence, not a side effect.
+          //  - Cannot be reached by this field at all, so they stay correctly
+          //    inert: pi-ai's `isRetryableAssistantError` requires
+          //    `stopReason === "error"`, and of `isContextOverflow`'s three
+          //    branches only the first reads `errorMessage` (also behind that
+          //    same gate) — its silent-overflow and length-stop branches judge
+          //    `usage` alone and never read this field. Writing it therefore
+          //    changes neither verdict.
+          //  - Read the field unconditionally but only ACT on it behind a
+          //    `stopReason === "error"` classifier, so they persist nothing:
+          //    Kermes `session_reaper.ts` discards this on a non-error tail
+          //    (`stop_detail` is written only when a blocked verdict is
+          //    reached). Surfacing these in reap verdicts needs a consumer-side
+          //    change; it does not follow from writing the field here.
           if (isEchoLoop) {
             // After max retries, strip the echo text to prevent the agent
             // loop from interpreting "Continue" as a continuation signal.
             (output.content[textBlockIndex as number] as TextContent).text = "";
+            const alsoEmpty = emptyAttempts > 0 ? ` (plus ${describeAttempts(emptyAttempts)} with no text at all)` : "";
             console.warn(
-              `[pi-provider-kiro] Echo loop persisted after ${maxRetries} retries — stripping "Continue" response`,
+              `[pi-provider-kiro] Echo loop persisted across ${describeAttempts(echoAttempts)}${alsoEmpty} — stripping "Continue" response (${responseText.length} chars)`,
             );
+            output.errorMessage = `Kiro model echoed its own continuation prompt (${JSON.stringify(
+              clampForDiagnostic(responseText),
+            )}) on ${describeAttempts(
+              echoAttempts,
+            )}${alsoEmpty} and emitted no tool calls; retry budget exhausted, text stripped, stopReason:"${
+              output.stopReason
+            }"`;
           } else {
+            const alsoEchoed =
+              echoAttempts > 0 ? ` (plus ${describeAttempts(echoAttempts)} that echoed the continuation prompt)` : "";
             console.warn(
-              `[pi-provider-kiro] Empty response after ${maxRetries} retries — returning stopReason:"stop" to avoid agent loop stall`,
+              `[pi-provider-kiro] Empty response on ${describeAttempts(emptyAttempts)}${alsoEchoed}, retry budget exhausted — returning stopReason:"${output.stopReason}" to avoid agent loop stall`,
             );
+            // This attempt produced no text block, so any text still in
+            // `output.content` was left by an attempt that was discarded — see
+            // `describeReturnedContent`.
+            //
+            // The `textBlockIndex === null` conjunct is redundant as written and
+            // kept deliberately. No wire shape reaches this branch with a non-null
+            // `textBlockIndex`: every path that creates a text block also puts
+            // non-empty text in it (`ThinkingTagParser.emitText` returns early on
+            // empty input, and the non-reasoning handler's dedup guard swallows a
+            // leading `content: ""` because `lastContentData` also starts empty),
+            // which would make `hasText` true and the turn non-degenerate. No test
+            // pins the conjunct for that reason. It stays so that a future path
+            // which does leave a zero-length text block cannot silently blame this
+            // attempt's own block on a discarded one.
+            const textResidue = textBlockIndex === null && output.content.some((block) => block.type === "text");
+            output.errorMessage = `Kiro returned no text and no tool calls on ${describeAttempts(
+              emptyAttempts,
+            )}${alsoEchoed}; retry budget exhausted, ${describeReturnedContent(
+              output.content,
+              textResidue,
+            )} with stopReason:"${output.stopReason}"`;
           }
         }
-        // Use emittedToolCalls (not toolCalls.length) to avoid stopReason:"toolUse"
-        // when all tool calls were skipped due to empty/unparseable input — that
-        // combination (empty content + toolUse stop) causes pi's agent loop to
-        // stall waiting for tool results that will never arrive.
-        if (!receivedContextUsage && emittedToolCalls === 0) {
-          output.stopReason = "length";
-        } else {
-          output.stopReason = emittedToolCalls > 0 ? "toolUse" : "stop";
+        // A tool call the model DID make never reached pi: its arguments would not
+        // parse, so `emitToolCall` dropped it (see that function). Nothing else
+        // records this — `sawAnyToolCalls` is already true, which is exactly what
+        // suppresses the empty-response retry above and the bracket fallback
+        // earlier, and the content array simply lacks a block. Unlike the two
+        // exhaustion cases, this one is unrecoverable downstream: the call is gone
+        // before the message is persisted.
+        if (droppedToolCalls.length > 0) {
+          const names = clampForDiagnostic(droppedToolCalls.map((name) => JSON.stringify(name)).join(", "));
+          // The names enumerate the drops, so the count is not printed: it is
+          // unbounded (a turn may carry any number of malformed calls) and an
+          // unbounded integer here can collide with a consumer's retryable-error
+          // pattern — see `clampForDiagnostic`.
+          const one = droppedToolCalls.length === 1;
+          const dropDiagnostic = `Kiro sent ${one ? "a tool call" : "tool calls"} with unparseable arguments (${names}); ${
+            one ? "it was" : "they were"
+          } dropped and never reached the agent, stopReason:"${output.stopReason}"`;
+          // Concatenation is defensive: today the two diagnostics are mutually
+          // exclusive, because any drop sets `sawAnyToolCalls` and `degenerate`
+          // requires `!sawAnyToolCalls`. Kept so that loosening either predicate
+          // appends rather than silently overwriting an exhaustion diagnostic.
+          output.errorMessage = output.errorMessage ? `${output.errorMessage}. ${dropDiagnostic}` : dropDiagnostic;
         }
         stream.push({ type: "done", reason: output.stopReason as "stop" | "toolUse", message: output });
         debugLog("response.done", {
