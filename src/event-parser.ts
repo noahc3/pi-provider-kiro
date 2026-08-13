@@ -44,10 +44,10 @@ export type KiroUsageData = {
   cacheWriteInputTokens?: number;
   contextUsagePercentage?: number;
   /**
-   * `TokenUsage.normalizedTokenUsage` — usage normalized by MPS from credit
-   * information. Distinct from `MeteringEvent.usage`, which is a raw credit
-   * count; surfaced so it is not dropped at the boundary like the rest of
-   * `MetadataEvent` was.
+   * `TokenUsage.normalizedTokenUsage` — the MPS credit basis, not a token count.
+   * Usage normalized by MPS from credit information. Distinct from
+   * `MeteringEvent.usage`, which is a raw credit count; surfaced so it is not
+   * dropped at the boundary like the rest of `MetadataEvent` was.
    */
   normalizedTokenUsage?: number;
   /** `MetadataEvent.stopReason`, passed through verbatim. */

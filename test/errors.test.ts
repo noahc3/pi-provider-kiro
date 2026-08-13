@@ -419,7 +419,7 @@ describe("typed classification per reason code", () => {
     expect(diagnostic?.error?.message).toBe(message.errorMessage);
   });
 
-  it("adds no diagnostic when the request succeeds", async () => {
+  it("adds no error diagnostic when the request succeeds", async () => {
     const mockFetch = vi.fn().mockResolvedValue({
       ok: true,
       body: {
@@ -443,8 +443,12 @@ describe("typed classification per reason code", () => {
     try {
       const events = await collect(streamKiro(makeModel(), makeContext(), { apiKey: "tok" }));
       const done = events.find((e) => e.type === "done");
+      const message = done?.type === "done" ? done.message : undefined;
 
-      expect(done?.type === "done" && done.message.diagnostics).toBeUndefined();
+      // Scoped to the error diagnostic: a successful turn still carries the
+      // per-turn usage provenance record, which is emitted unconditionally.
+      expect(message && kiroDiagnostic(message)).toBeUndefined();
+      expect(message?.diagnostics?.some((d) => d.type === "kiro_api_error")).not.toBe(true);
     } finally {
       vi.unstubAllGlobals();
     }
