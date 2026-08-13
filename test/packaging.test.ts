@@ -12,6 +12,7 @@ const pkg = JSON.parse(readFileSync(`${repoRoot}package.json`, "utf8")) as {
   types?: string;
   files?: string[];
   scripts: Record<string, string>;
+  dependencies?: Record<string, string>;
   peerDependencies?: Record<string, string>;
   peerDependenciesMeta?: Record<string, { optional?: boolean }>;
   pi?: { extensions?: string[] };
@@ -63,7 +64,25 @@ describe("published package surface", () => {
   });
 
   it("emits declarations alongside the bundle", () => {
-    expect(pkg.scripts.build).toContain("tsc --emitDeclarationOnly");
+    expect(pkg.scripts["build:types"]).toContain("tsc --emitDeclarationOnly");
+    // `prepack` runs before the tarball is assembled, so a published package
+    // carries `dist/index.d.ts` even though `build` alone no longer emits it.
+    expect(pkg.scripts.prepack).toContain("build:types");
+  });
+
+  // `prepare` is what npm runs when this package is installed FROM GIT, and pi
+  // installs extensions with `npm install --omit=dev`. `typescript` is a
+  // devDependency, so a `prepare` chain that reaches `tsc` exits 127 ("tsc: not
+  // found") and fails the whole install after the bundle already succeeded.
+  // Only the esbuild bundle is needed to load the extension; declarations are a
+  // publish-time concern and belong on `prepack`.
+  it("keeps the git-install path free of devDependency binaries", () => {
+    const prepareChain = [pkg.scripts.prepare, pkg.scripts.build].join(" && ");
+    expect(prepareChain).not.toMatch(/\btsc\b/);
+    expect(prepareChain).not.toMatch(/\bbiome\b/);
+    expect(prepareChain).not.toMatch(/\bvitest\b/);
+    // Whatever `prepare` does invoke must survive --omit=dev.
+    expect(pkg.dependencies).toHaveProperty("esbuild");
   });
 
   // Bundled CJS dependencies call `require("buffer")` — the @smithy/core
