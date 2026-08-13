@@ -23,6 +23,8 @@ import { streamKiro } from "./stream.js";
 import { fetchKiroUsage } from "./usage.js";
 
 export { resolveApiRegion } from "./endpoints.js";
+export type { KiroProviderAttempts } from "./errors.js";
+export { KiroApiError } from "./errors.js";
 export type { KiroStreamEvent } from "./event-parser.js";
 export { KIRO_MODEL_IDS, kiroModels, resolveKiroModel } from "./models.js";
 export { streamKiro } from "./stream.js";
