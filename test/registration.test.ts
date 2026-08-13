@@ -38,6 +38,36 @@ describe("Feature 1: Extension Registration", () => {
     expect(typeof mod.default).toBe("function");
   });
 
+  // Consumers that classify a reason code without an error instance in hand
+  // (a persisted log line, say) need the vocabulary through the package entry
+  // point, not a deep import into src/retry.js.
+  it("exposes Kiro's reason codes and classification predicates from the entry point", async () => {
+    const mod = await import("../src/index.js");
+    const retry = await import("../src/retry.js");
+
+    expect(mod.KIRO_REASON_CODES).toBe(retry.KIRO_REASON_CODES);
+    expect(mod.TOO_BIG_PATTERNS).toBe(retry.TOO_BIG_PATTERNS);
+    expect(mod.NON_RETRYABLE_BODY_PATTERNS).toBe(retry.NON_RETRYABLE_BODY_PATTERNS);
+    expect(mod.CAPACITY_PATTERN).toBe(retry.CAPACITY_PATTERN);
+    expect(mod.isTooBigError).toBe(retry.isTooBigError);
+    expect(mod.isNonRetryableBodyError).toBe(retry.isNonRetryableBodyError);
+    expect(mod.isCapacityError).toBe(retry.isCapacityError);
+  });
+
+  it("keeps predicate behaviour unchanged through the entry point", async () => {
+    const { KIRO_REASON_CODES, isCapacityError, isNonRetryableBodyError, isTooBigError } = await import(
+      "../src/index.js"
+    );
+
+    expect(isTooBigError(413, "")).toBe(true);
+    expect(isTooBigError(400, KIRO_REASON_CODES.CONTENT_LENGTH_EXCEEDS_THRESHOLD)).toBe(true);
+    expect(isTooBigError(400, KIRO_REASON_CODES.REQUEST_BODY_INVALID)).toBe(false);
+    expect(isNonRetryableBodyError(KIRO_REASON_CODES.MONTHLY_REQUEST_COUNT)).toBe(true);
+    expect(isNonRetryableBodyError(KIRO_REASON_CODES.INSUFFICIENT_MODEL_CAPACITY)).toBe(false);
+    expect(isCapacityError(KIRO_REASON_CODES.INSUFFICIENT_MODEL_CAPACITY)).toBe(true);
+    expect(isCapacityError(KIRO_REASON_CODES.MONTHLY_REQUEST_COUNT)).toBe(false);
+  });
+
   it("calls registerProvider with 'kiro'", async () => {
     const mod = await import("../src/index.js");
     const { pi, registerProvider } = mockPi();

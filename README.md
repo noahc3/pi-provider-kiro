@@ -102,6 +102,34 @@ This provider only keeps local recovery for Kiro-specific cases:
 - empty-stream retries
 - non-retryable Kiro body markers like `MONTHLY_REQUEST_COUNT` and `INSUFFICIENT_MODEL_CAPACITY`
 
+The reason codes this provider classifies on are published from the package
+entry point, so consumers can interpret a code without hardcoding their own copy
+of the literals:
+
+```ts
+import {
+  KIRO_REASON_CODES,
+  isCapacityError,
+  isNonRetryableBodyError,
+  isTooBigError,
+} from "pi-provider-kiro";
+
+isTooBigError(400, body); // size rejection → safe to compact and retry
+isCapacityError(body); // transient capacity → safe to retry as-is
+isNonRetryableBodyError(body); // hard quota → do not retry
+```
+
+These are Kiro's own codes, not a provider taxonomy: mapping them to your own
+semantics is the consumer's job.
+
+One caveat for consumers outside pi: the entry point is the whole provider, so
+importing it loads modules that import pi's host packages
+(`@earendil-works/pi-ai`, `-pi-coding-agent`, `-pi-tui`). They are declared as
+optional peer dependencies — present already wherever this runs as a pi
+extension, but a standalone project must install them itself or the import fails
+with `ERR_MODULE_NOT_FOUND`. The types resolve without them under the usual
+`skipLibCheck`.
+
 ## Development
 
 ```bash

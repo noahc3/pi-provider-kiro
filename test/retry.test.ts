@@ -3,13 +3,17 @@
 
 import { describe, expect, it } from "vitest";
 import {
+  CAPACITY_PATTERN,
   exponentialBackoff,
   FIRST_TOKEN_TIMEOUT,
   isCapacityError,
   isNonRetryableBodyError,
   isTooBigError,
+  KIRO_REASON_CODES,
   MAX_RETRY_DELAY,
+  NON_RETRYABLE_BODY_PATTERNS,
   retryConfig,
+  TOO_BIG_PATTERNS,
 } from "../src/retry.js";
 
 describe("exponentialBackoff", () => {
@@ -36,6 +40,42 @@ describe("exponentialBackoff", () => {
 describe("MAX_RETRY_DELAY", () => {
   it("is exported as 10000ms", () => {
     expect(MAX_RETRY_DELAY).toBe(10000);
+  });
+});
+
+describe("KIRO_REASON_CODES", () => {
+  it("exposes the service's codes verbatim", () => {
+    expect(KIRO_REASON_CODES).toEqual({
+      CONTENT_LENGTH_EXCEEDS_THRESHOLD: "CONTENT_LENGTH_EXCEEDS_THRESHOLD",
+      INPUT_TOO_LONG: "Input is too long",
+      MONTHLY_REQUEST_COUNT: "MONTHLY_REQUEST_COUNT",
+      INSUFFICIENT_MODEL_CAPACITY: "INSUFFICIENT_MODEL_CAPACITY",
+      REQUEST_BODY_INVALID: "REQUEST_BODY_INVALID",
+    });
+  });
+
+  it("is frozen so consumers cannot mutate the shared vocabulary", () => {
+    expect(Object.isFrozen(KIRO_REASON_CODES)).toBe(true);
+    expect(Object.isFrozen(TOO_BIG_PATTERNS)).toBe(true);
+    expect(Object.isFrozen(NON_RETRYABLE_BODY_PATTERNS)).toBe(true);
+  });
+
+  it("is the source the pattern lists derive from", () => {
+    expect(TOO_BIG_PATTERNS).toEqual([
+      KIRO_REASON_CODES.CONTENT_LENGTH_EXCEEDS_THRESHOLD,
+      KIRO_REASON_CODES.INPUT_TOO_LONG,
+    ]);
+    expect(NON_RETRYABLE_BODY_PATTERNS).toEqual([KIRO_REASON_CODES.MONTHLY_REQUEST_COUNT]);
+    expect(CAPACITY_PATTERN).toBe(KIRO_REASON_CODES.INSUFFICIENT_MODEL_CAPACITY);
+  });
+
+  // REQUEST_BODY_INVALID is published as vocabulary but must not be a size
+  // marker: treating it as one sends the caller into an unsatisfiable
+  // compaction loop over a history that was never the problem.
+  it("keeps REQUEST_BODY_INVALID out of every classification list", () => {
+    expect(TOO_BIG_PATTERNS).not.toContain(KIRO_REASON_CODES.REQUEST_BODY_INVALID);
+    expect(NON_RETRYABLE_BODY_PATTERNS).not.toContain(KIRO_REASON_CODES.REQUEST_BODY_INVALID);
+    expect(isTooBigError(400, KIRO_REASON_CODES.REQUEST_BODY_INVALID)).toBe(false);
   });
 });
 

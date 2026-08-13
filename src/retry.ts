@@ -28,16 +28,43 @@ export function exponentialBackoff(attempt: number, baseMs: number, maxMs: numbe
 
 export const MAX_RETRY_DELAY = 10_000;
 
-// Size markers only. "Improperly formed request." is Kiro's generic
-// request-validation rejection (reason `REQUEST_BODY_INVALID`) — it is returned
-// for a malformed body of any size, including an empty `content` field or a
-// history referencing tools absent from the catalog. Classifying it as
-// "too big" made every such 400 surface as `context_length_exceeded`, which
-// sends the caller into a compaction loop it can never satisfy: the request is
-// invalid, not oversized, so no amount of history reduction fixes it.
-export const TOO_BIG_PATTERNS = ["CONTENT_LENGTH_EXCEEDS_THRESHOLD", "Input is too long"];
-const NON_RETRYABLE_BODY_PATTERNS = ["MONTHLY_REQUEST_COUNT"];
-const CAPACITY_PATTERN = "INSUFFICIENT_MODEL_CAPACITY";
+/**
+ * Machine reason codes returned by the Kiro API, plus the one prose marker the
+ * service emits without a code (`INPUT_TOO_LONG`).
+ *
+ * Single source of truth for the provider's error vocabulary: the pattern lists
+ * and predicates below are derived from it, and it is re-exported from the
+ * package entry point so consumers can classify a code without holding an error
+ * instance — e.g. reading a persisted log line. These are the service's own
+ * codes, deliberately not renamed or mapped into a provider taxonomy.
+ */
+export const KIRO_REASON_CODES = Object.freeze({
+  /** Request body exceeded the service's size threshold. */
+  CONTENT_LENGTH_EXCEEDS_THRESHOLD: "CONTENT_LENGTH_EXCEEDS_THRESHOLD",
+  /** Prose-only size rejection; the service sends no reason code for this one. */
+  INPUT_TOO_LONG: "Input is too long",
+  /** Monthly request quota exhausted — hard limit, not transient. */
+  MONTHLY_REQUEST_COUNT: "MONTHLY_REQUEST_COUNT",
+  /** Model capacity temporarily unavailable — transient, worth retrying. */
+  INSUFFICIENT_MODEL_CAPACITY: "INSUFFICIENT_MODEL_CAPACITY",
+  /**
+   * Generic request-validation rejection, returned for a malformed body of any
+   * size (empty `content`, history referencing tools absent from the catalog).
+   * Not a size signal: classifying it as "too big" makes the caller compact a
+   * history that was never the problem, a loop it can never satisfy.
+   */
+  REQUEST_BODY_INVALID: "REQUEST_BODY_INVALID",
+} as const);
+
+export type KiroReasonCode = (typeof KIRO_REASON_CODES)[keyof typeof KIRO_REASON_CODES];
+
+// Size markers only — REQUEST_BODY_INVALID is excluded on purpose (see above).
+export const TOO_BIG_PATTERNS: readonly string[] = Object.freeze([
+  KIRO_REASON_CODES.CONTENT_LENGTH_EXCEEDS_THRESHOLD,
+  KIRO_REASON_CODES.INPUT_TOO_LONG,
+]);
+export const NON_RETRYABLE_BODY_PATTERNS: readonly string[] = Object.freeze([KIRO_REASON_CODES.MONTHLY_REQUEST_COUNT]);
+export const CAPACITY_PATTERN = KIRO_REASON_CODES.INSUFFICIENT_MODEL_CAPACITY;
 export const CAPACITY_MAX_RETRIES = 3;
 export const CAPACITY_BASE_DELAY_MS = 5_000;
 
