@@ -26,6 +26,12 @@ export { resolveApiRegion } from "./endpoints.js";
 export type { KiroProviderAttempts } from "./errors.js";
 export { KiroApiError } from "./errors.js";
 export type { KiroStreamEvent } from "./event-parser.js";
+export type { KiroErrorPlane, KiroManagementErrorInfo } from "./management.js";
+export {
+  isKiroManagementHttpError,
+  KIRO_AUTH_PLANE_DIAGNOSTIC,
+  KiroManagementHttpError,
+} from "./management.js";
 export { KIRO_MODEL_IDS, kiroModels, resolveKiroModel } from "./models.js";
 export { streamKiro } from "./stream.js";
 
